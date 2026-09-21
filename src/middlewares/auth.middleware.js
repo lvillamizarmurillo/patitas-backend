@@ -1,37 +1,18 @@
 const jwt = require('jsonwebtoken');
+const env = require('../config/env');
+const AppError = require('../utils/AppError');
 
-const authMiddleware = (req, res, next) => {
-  // 1. Extraer el token del header Authorization: Bearer <token>
-  const authHeader = req.headers.authorization;
-  
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(401).json({ message: 'No autorizado. Token no proporcionado.' });
-  }
-
-  const token = authHeader.split(' ')[1];
-
+exports.authMiddleware = (req, _res, next) => {
+  const [scheme, token] = (req.headers.authorization || '').split(' ');
+  if (scheme !== 'Bearer' || !token) return next(AppError.unauthorized('Token no proporcionado'));
   try {
-    // 2. Verificar el token usando la clave secreta
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    
-    // 3. Adjuntar la información del usuario decodificada al objeto request
-    req.user = decoded;
-    
-    // 4. Continuar al siguiente middleware o controlador
+    const p = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'], issuer: 'patitas-api' });
+    req.user = { id: p.sub, role: p.role }; // ya no viaja el email dentro del token
     next();
-  } catch (error) {
-    return res.status(401).json({ message: 'Token inválido o expirado.' });
+  } catch {
+    next(AppError.unauthorized('Token inválido o expirado'));
   }
 };
 
-// Middleware opcional para restringir el acceso según el rol
-const roleMiddleware = (rolesPermitidos) => {
-  return (req, res, next) => {
-    if (!req.user || !rolesPermitidos.includes(req.user.role)) {
-      return res.status(403).json({ message: 'Acceso denegado. Rol insuficiente.' });
-    }
-    next();
-  };
-};
-
-module.exports = { authMiddleware, roleMiddleware };
+exports.requireRole = (...roles) => (req, _res, next) =>
+  roles.includes(req.user?.role) ? next() : next(AppError.forbidden('Rol insuficiente'));

@@ -1,46 +1,58 @@
+const crypto = require('crypto');
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
-const morgan = require('morgan');
-const authRoutes = require('./routes/auth.routes');
-const path = require('path');
-const petRoutes = require('./routes/pet.routes');
-const catalogRoutes = require('./routes/catalog.routes');
-const appointmentRoutes = require('./routes/appointment.routes');
+const compression = require('compression');
+const pinoHttp = require('pino-http');
+const env = require('./config/env');
+const logger = require('./config/logger');
+const { sequelize } = require('./models');
+const routes = require('./routes');
+const { globalLimiter } = require('./middlewares/rate-limit.middleware');
+const notFound = require('./middlewares/not-found.middleware');
+const errorHandler = require('./middlewares/error.middleware');
 
 const app = express();
+app.set('trust proxy', 1); // detrás del ALB de AWS: IP real del cliente para el rate limit
 
-// Middlewares globales
-app.use(cors());
+app.use(pinoHttp({
+  logger,
+  genReqId: (req) => req.headers['x-request-id'] || crypto.randomUUID(),
+}));
 app.use(helmet());
-app.use(morgan('dev'));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(cors({
+  origin: env.CORS_ORIGINS.split(','),
+  methods: ['GET', 'POST', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  maxAge: 600,
+}));
+app.use(compression());
 
-// Añadir debajo de los middlewares globales
-// Sirve la carpeta public/uploads estáticamente para ver las imágenes
-app.use(express.static(path.join(__dirname, '../public')));
-
-// Ruta de Healthcheck para verificar que la API responde
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Patitas API funcionando correctamente' });
+// Health checks ANTES del rate limit (el ALB los consulta constantemente)
+app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/ready', async (_req, res) => {
+  try {
+    await sequelize.authenticate();
+    res.json({ status: 'ready' });
+  } catch {
+    res.status(503).json({ status: 'unavailable' });
+  }
 });
 
-app.use('/api/auth', authRoutes);
+app.use(globalLimiter);
+app.use(express.json({ limit: '10kb' }));
+app.use(express.urlencoded({ extended: false, limit: '10kb' }));
 
-app.use('/api/pets', petRoutes);
+// Solo en desarrollo: imágenes locales. Helmet bloquea por defecto cargarlas desde otro origen.
+if (env.STORAGE_DRIVER === 'local') {
+  app.use('/uploads',
+    helmet.crossOriginResourcePolicy({ policy: 'cross-origin' }),
+    express.static(path.join(__dirname, '../public/uploads'), { index: false }));
+}
 
-app.use('/api/catalogs', catalogRoutes);
-
-app.use('/api/appointments', appointmentRoutes);
-
-// Middleware centralizado de errores
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ 
-    error: 'Error interno del servidor',
-    message: process.env.NODE_ENV === 'development' ? err.message : undefined
-  });
-});
+app.use('/api/v1', routes);
+app.use(notFound);
+app.use(errorHandler);
 
 module.exports = app;

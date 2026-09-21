@@ -1,15 +1,13 @@
 const { Sequelize } = require('sequelize');
+const env = require('./env');
+const logger = require('./logger');
 
-const sequelize = new Sequelize(
-  process.env.DB_NAME,
-  process.env.DB_USER,
-  process.env.DB_PASSWORD,
-  {
-    host: process.env.DB_HOST,
-    dialect: 'postgres',
-    port: process.env.DB_PORT || 5432,
-    logging: false, // Cámbialo a console.log para ver las queries SQL
-  }
-);
-
-module.exports = sequelize;
+module.exports = new Sequelize(env.DB_NAME, env.DB_USER, env.DB_PASSWORD, {
+  host: env.DB_HOST,
+  port: env.DB_PORT,
+  dialect: 'postgres',
+  logging: env.NODE_ENV === 'development' ? (sql) => logger.debug(sql) : false,
+  pool: { max: 10, min: 0, acquire: 30000, idle: 10000 },
+  // En RDS usa el bundle de CA de AWS en vez de rejectUnauthorized:false
+  dialectOptions: env.DB_SSL ? { ssl: { require: true, rejectUnauthorized: false } } : {},
+});

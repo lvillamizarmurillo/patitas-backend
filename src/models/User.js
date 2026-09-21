@@ -43,29 +43,45 @@ const User = sequelize.define('User', {
     type: DataTypes.BOOLEAN,
     allowNull: false,
     defaultValue: false,
+  },
+  // Nuevos campos: prueba de consentimiento (Ley 1581 de 2012, habeas data)
+  termsAcceptedAt: { 
+    type: DataTypes.DATE 
+  },
+  termsVersion: { 
+    type: DataTypes.STRING(20) 
+  },
+  // Campo sugerido en el análisis para verificación de refugios/criadores
+  isVerified: {
+    type: DataTypes.BOOLEAN,
+    defaultValue: false,
   }
 }, {
   timestamps: true,
+  paranoid: true, // Habilita el "soft delete" (borrado lógico) recomendado
+  
+  // Seguridad: Nunca devuelve la contraseña por defecto en consultas (find, findAll)
+  defaultScope: { 
+    attributes: { exclude: ['password'] } 
+  },
+  // Scope especial usado únicamente en el login
+  scopes: { 
+    withPassword: {} 
+  },
+  
   hooks: {
-    // Hook para encriptar la contraseña antes de guardar el usuario
-    beforeCreate: async (user) => {
+    // Incremento del factor de costo a 12 para mayor seguridad
+    beforeCreate: async (user) => { 
       if (user.password) {
-        const salt = await bcrypt.genSalt(10);
-        user.password = await bcrypt.hash(user.password, salt);
+        user.password = await bcrypt.hash(user.password, 12); 
       }
     },
-    beforeUpdate: async (user) => {
+    beforeUpdate: async (user) => { 
       if (user.changed('password')) {
-        const salt = await bcrypt.genSalt(10);
-        user.password = await bcrypt.hash(user.password, salt);
+        user.password = await bcrypt.hash(user.password, 12); 
       }
     }
   }
 });
-
-// Método de instancia para verificar la contraseña
-User.prototype.validPassword = async function(password) {
-  return await bcrypt.compare(password, this.password);
-};
 
 module.exports = User;
