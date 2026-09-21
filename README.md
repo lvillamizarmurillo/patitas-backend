@@ -1,208 +1,230 @@
-```markdown
-# Patitas Backend - Sistema de Adopciones 🐾
+# PATITAS BACKEND - SISTEMA DE ADOPCIONES 🐾
 
-Backend monolítico y dockerizado para la plataforma de adopción de mascotas "Patitas". Construido con Node.js, Express y PostgreSQL (Sequelize ORM). Diseñado para gestionar usuarios (adoptantes, refugios, criadores), publicaciones de mascotas, filtros avanzados de búsqueda y un sistema de agendamiento de citas en clínicas veterinarias aliadas.
+Backend de nivel empresarial para la plataforma de adopción de mascotas "Patitas". Construido bajo una arquitectura de **Monolito Modular Orientado a Dominios** utilizando Node.js, Express 5 y PostgreSQL.
 
----
-
-## 📑 Índice
-
-1. [Requisitos Previos](#requisitos-previos)
-2. [Instalación y Configuración](#instalación-y-configuración)
-3. [Esquema de Base de Datos y Seeders](#esquema-de-base-de-datos-y-seeders)
-4. [Endpoints de la API](#endpoints-de-la-api)
-5. [Próximas Características](#próximas-características)
+El sistema garantiza alta disponibilidad, seguridad estricta de datos (validaciones Zod, Rate Limiting, Sanitización de imágenes) y un flujo de desarrollo robusto con migraciones y contenedores, listo para desplegarse en entornos *cloud-native* como AWS ECS.
 
 ---
 
-## 🛠️ Requisitos Previos
+## 📑 ÍNDICE
 
-*   **Node.js** (v20 o superior)
-*   **Docker** y **Docker Compose**
-*   **PostgreSQL** (Si se desea ejecutar fuera de Docker)
-*   Cliente Git
+1. [ARQUITECTURA Y STACK TECNOLÓGICO](#1-arquitectura-y-stack-tecnológico)
+2. [ESTRUCTURA DE DIRECTORIOS Y ARCHIVOS](#2-estructura-de-directorios-y-archivos)
+3. [INSTALACIÓN Y CONFIGURACIÓN](#3-instalación-y-configuración)
+4. [BASE DE DATOS: MIGRACIONES Y SEEDERS](#4-base-de-datos-migraciones-y-seeders)
+5. [ENDPOINTS DE LA API](#5-endpoints-de-la-api)
+6. [PRÓXIMAS CARACTERÍSTICAS Y ROADMAP](#6-próximas-características-y-roadmap)
 
 ---
 
-## 🚀 Instalación y Configuración
+## 1. ARQUITECTURA Y STACK TECNOLÓGICO
 
-**1. Clonar el repositorio:**
+- **Runtime & Framework:** Node.js 20 (Alpine), Express 5 (Manejo nativo de promesas y errores asíncronos).
+- **Base de Datos & ORM:** PostgreSQL 15, Sequelize (con CLI para Migraciones y Seeders).
+- **Seguridad:** JWT (JSON Web Tokens), Bcryptjs (Factor 12), Helmet, Express-Rate-Limit.
+- **Validación de Datos (DTOs):** Zod (Strict schema parsing para evitar *mass assignment* e inyecciones).
+- **Logging:** Pino & Pino-HTTP (Logging estructurado JSON ideal para CloudWatch/Datadog).
+- **Procesamiento de Archivos:** Multer (Memoria) + Sharp (Optimización WebP, redimensionamiento y eliminación metadatos EXIF/GPS).
+- **Generación de Documentos:** Puppeteer Core + EJS (Generación de contratos de adopción en formato PDF).
+- **Infraestructura:** Docker nativo (Multi-stage build).
+
+---
+
+## 2. ESTRUCTURA DE DIRECTORIOS Y ARCHIVOS
+
+El código está organizado por **dominios de negocio**, abandonando el patrón MVC tradicional. Cada módulo es independiente.
+
+### ARCHIVOS RAÍZ Y CONFIGURACIÓN
+
+- **`server.js`**: Punto de entrada de la aplicación. Autentica la base de datos, inicia el servidor HTTP y maneja el **Graceful Shutdown** interceptando señales `SIGTERM/SIGINT` para cerrar conexiones limpiamente antes de que el contenedor muera.
+- **`docker-compose.yml`**: Orquesta el contenedor de Node.js y la base de datos PostgreSQL en una red local privada para desarrollo.
+- **`Dockerfile`**: Receta multi-stage. Crea imágenes ligeras, instala Chromium para Puppeteer y separa el entorno de desarrollo del de producción.
+- **`.sequelizerc`**: Le indica a Sequelize CLI dónde encontrar las carpetas de migraciones, seeders y la configuración de la BD.
+- **`.dockerignore` / `.gitignore`**: Evitan que secretos (`.env`) o dependencias pesadas (`node_modules`) se suban al repositorio o al contenedor.
+
+### CARPETA `src/`
+
+Código fuente principal de la aplicación.
+
+#### `src/config/` — CONFIGURACIONES BASE
+
+- **`env.js`**: Validador estricto de variables de entorno usando Zod. Si falta una variable o el `JWT_SECRET` es muy corto, la app no arranca.
+- **`database.js`**: Instancia de Sequelize. Configura el pool de conexiones y el dialecto de Postgres.
+- **`logger.js`**: Instancia de Pino. Oculta (redacta) contraseñas y tokens en los logs por seguridad.
+- **`sequelize-cli.js`**: Puente de credenciales para ejecutar comandos de migración.
+
+#### `src/models/` — CAPA DE DATOS
+
+- **`index.js`**: El archivo más importante de esta carpeta. **Centraliza todas las relaciones** (`hasMany`, `belongsTo`) entre modelos.
+- **`User.js` / `Pet.js` / `VetClinic.js` / `Appointment.js` / `Contract.js`**: Definición de las tablas, tipos de datos, validaciones intrínsecas y *Hooks* (ej. encriptar password `beforeCreate` en User). Utilizan `paranoid: true` para borrado lógico (*Soft Delete*).
+
+#### `src/middlewares/` — INTERCEPTORES
+
+- **`auth.middleware.js`**: Extrae el JWT, lo valida y protege rutas (`authMiddleware`). También verifica permisos (`requireRole`).
+- **`validate.middleware.js`**: Intercepta `req.body`, `req.query` y `req.params`, los pasa por Zod y guarda la data limpia y validada en `req.valid`.
+- **`error.middleware.js`**: Captura cualquier error de la app. Normaliza errores de Sequelize, Multer o Zod, evitando que la app se caiga y devolviendo un JSON limpio.
+- **`rate-limit.middleware.js`**: Define límites de peticiones (ej. máximo 5 registros por hora, máximo 10 intentos de login) para mitigar ataques DDoS o de fuerza bruta.
+- **`upload.middleware.js`**: Usa Multer para recibir la imagen en memoria y Sharp para convertirla a WebP, bajarle el peso (<300 KB) y quitar datos GPS.
+
+#### `src/providers/` — INYECCIÓN DE DEPENDENCIAS
+
+- **`storage/`**: Implementa el patrón *Strategy*. Dependiendo de `STORAGE_DRIVER` en el `.env`, sube imágenes localmente (`local.provider.js`), a Cloudinary o a Amazon S3, manteniendo el controlador de Mascotas agnóstico e intacto.
+
+#### `src/utils/`
+
+- **`AppError.js`**: Clase personalizada para manejar errores HTTP predecibles (ej. `AppError.notFound()`, `AppError.unauthorized()`).
+- **`schemas.js`**: Validadores genéricos reciclables (ej. expresiones regulares para validar UUIDs v4 correctos).
+
+### `src/modules/` — LA CAPA DE NEGOCIO
+
+Cada módulo sigue el flujo:
+
+**Ruta → Validador (Schema) → Controlador → Servicio**
+
+- **`auth/`**: Maneja registro, login (comparando con Hash Señuelo para evitar ataques de *timing*) y generación de JWT.
+- **`pets/`**: Lógica de publicación y búsqueda. El servicio aplica condiciones `Op.iLike` para búsquedas e incluye datos del `owner`.
+- **`appointments/`**: Sistema crítico de agendamiento. El servicio usa **Transacciones SQL y Bloqueos de Fila (`FOR UPDATE`)** para evitar que dos usuarios reserven la misma mascota al mismo tiempo. Implementa una máquina de estados estricta (`pending → confirmed → completed`).
+- **`contracts/`**: Una vez una cita es `completed`, inyecta los datos de la mascota y los usuarios en `templates/contract.ejs` y usa `pdf.service.js` (Puppeteer) para crear el contrato PDF.
+- **`dashboard/`**: Ejecuta `Promise.all` para hacer 4 consultas en paralelo y devolver las métricas completas al panel del refugio.
+- **`catalogs/`**: Agrupa información (clínicas, razas, ciudades) para los filtros visuales del frontend.
+
+---
+
+## 3. INSTALACIÓN Y CONFIGURACIÓN
+
+### 3.1. Clonar el repositorio
+
 ```bash
-git clone [https://github.com/lvillamizarmurillo/patitas-backend.git](https://github.com/lvillamizarmurillo/patitas-backend.git)
+git clone https://github.com/lvillamizarmurillo/patitas-backend.git
 cd patitas-backend
-
 ```
 
-**2. Configurar variables de entorno:**
-Crea un archivo llamado `.env` en la raíz del proyecto y agrega la siguiente configuración:
+### 3.2. Configurar variables de entorno
+
+Crea un archivo `.env` en la raíz. El sistema validará su existencia.
 
 ```env
+NODE_ENV=development
 PORT=3000
+LOG_LEVEL=debug
 DB_HOST=db
 DB_PORT=5432
 DB_USER=postgres
-DB_PASSWORD=123456
-DB_NAME=postgres
-JWT_SECRET=tu_secreto_super_seguro_patitas_2026
+DB_PASSWORD=una_contraseña_segura_aqui
+DB_NAME=patitas_db
+DB_SSL=false
+JWT_SECRET=tu_secreto_super_seguro_patitas_2026_minimo_32_caracteres
 JWT_EXPIRES_IN=24h
-NODE_ENV=development
-
+CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+STORAGE_DRIVER=local
 ```
 
-*(Nota: Si ejecutas la base de datos localmente sin Docker, cambia `DB_HOST` a `localhost`).*
-
-**3. Levantar la infraestructura (Docker):**
+### 3.3. Levantar la infraestructura
 
 ```bash
-docker compose up --build
-
-```
-
-La API estará disponible en `http://localhost:3000`.
-
----
-
-## 🗄️ Esquema de Base de Datos y Seeders
-
-El proyecto utiliza Sequelize para la sincronización automática de modelos (`sequelize.sync({ alter: true })`). Sin embargo, para crear la estructura manualmente y poblar la base de datos con datos de prueba, ejecuta el siguiente script SQL en tu cliente (ej. DBeaver, pgAdmin):
-
-```sql
--- Habilitar UUIDs
-CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
-
--- Tipos ENUM
-CREATE TYPE enum_users_role AS ENUM ('adopter', 'shelter', 'breeder', 'individual');
-CREATE TYPE enum_pets_adoption_type AS ENUM ('adoption', 'sale');
-CREATE TYPE enum_pets_status AS ENUM ('available', 'in_process', 'adopted');
-CREATE TYPE enum_appointments_status AS ENUM ('pending', 'confirmed', 'completed', 'cancelled');
-
--- Tablas
-CREATE TABLE "Users" (
-    "id" UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    "role" enum_users_role NOT NULL DEFAULT 'adopter',
-    "fullName" VARCHAR(255) NOT NULL,
-    "city" VARCHAR(255) NOT NULL,
-    "email" VARCHAR(255) NOT NULL UNIQUE,
-    "phone" VARCHAR(50) NOT NULL,
-    "password" VARCHAR(255) NOT NULL,
-    "termsAccepted" BOOLEAN NOT NULL DEFAULT false,
-    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE "Pets" (
-    "id" UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    "name" VARCHAR(255) NOT NULL,
-    "breed" VARCHAR(255) NOT NULL,
-    "ageMonths" INTEGER NOT NULL,
-    "city" VARCHAR(255) NOT NULL,
-    "price" DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
-    "adoptionType" enum_pets_adoption_type NOT NULL DEFAULT 'adoption',
-    "status" enum_pets_status NOT NULL DEFAULT 'available',
-    "imageUrl" VARCHAR(255),
-    "ownerId" UUID NOT NULL,
-    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY ("ownerId") REFERENCES "Users"("id") ON DELETE CASCADE ON UPDATE CASCADE
-);
-
-CREATE TABLE "VetClinics" (
-    "id" UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    "name" VARCHAR(255) NOT NULL,
-    "address" VARCHAR(255) NOT NULL,
-    "city" VARCHAR(255) NOT NULL,
-    "phone" VARCHAR(50),
-    "isActive" BOOLEAN DEFAULT true,
-    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE "Appointments" (
-    "id" UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    "meetingDate" TIMESTAMP WITH TIME ZONE NOT NULL,
-    "status" enum_appointments_status DEFAULT 'pending',
-    "notes" TEXT,
-    "adopterId" UUID NOT NULL,
-    "petId" UUID NOT NULL,
-    "clinicId" UUID NOT NULL,
-    "createdAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    "updatedAt" TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY ("adopterId") REFERENCES "Users"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY ("petId") REFERENCES "Pets"("id") ON DELETE CASCADE ON UPDATE CASCADE,
-    FOREIGN KEY ("clinicId") REFERENCES "VetClinics"("id") ON DELETE CASCADE ON UPDATE CASCADE
-);
-
--- SEEDERS (Datos de Prueba)
-INSERT INTO "Users" ("id", "role", "fullName", "city", "email", "phone", "password", "termsAccepted") VALUES 
-('d9b2d63d-a233-4123-8472-000000000001', 'shelter', 'Refugio Patitas Unidas', 'Bogotá', 'hola@refugiopatasunidas.org', '+573000000001', 'hash_simulado_123', true),
-('d9b2d63d-a233-4123-8472-000000000002', 'adopter', 'Ana María Ríos', 'Medellín', 'ana@correo.com', '+573000000000', 'hash_simulado_456', true);
-
-INSERT INTO "Pets" ("id", "name", "breed", "ageMonths", "city", "price", "adoptionType", "status", "imageUrl", "ownerId") VALUES 
-('e8c3e74e-b344-5234-9583-111111111111', 'Nube', 'Bulldog francés', 4, 'Medellín', 3900000.00, 'sale', 'available', '[https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80](https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80)', 'd9b2d63d-a233-4123-8472-000000000001'),
-('e8c3e74e-b344-5234-9583-222222222222', 'Tito', 'Schnauzer', 24, 'Bogotá', 0.00, 'adoption', 'available', '[https://images.unsplash.com/photo-1583337130417-3346a1be7dee?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80](https://images.unsplash.com/photo-1583337130417-3346a1be7dee?ixlib=rb-1.2.1&auto=format&fit=crop&w=800&q=80)', 'd9b2d63d-a233-4123-8472-000000000001');
-
-INSERT INTO "VetClinics" ("id", "name", "address", "city", "phone", "isActive") VALUES 
-('f7d4f85f-c455-6345-0694-333333333333', 'Maxcotas Center', 'Calle 10 # 43-20', 'Medellín', '321 453 0334', true),
-('f7d4f85f-c455-6345-0694-444444444444', 'Vet Salud Animal', 'Carrera 15 # 85-40', 'Bogotá', '310 987 6543', true);
-
+# Construye la imagen y levanta Postgres + Node (Nodemon vigila los cambios)
+docker compose up --build -d
 ```
 
 ---
 
-## 📡 Endpoints de la API
+## 4. BASE DE DATOS: MIGRACIONES Y SEEDERS
 
-Base URL: `http://localhost:3000/api`
+El proyecto no utiliza `sync()` en producción para evitar pérdida de datos. La base de datos se gestiona mediante el CLI de Sequelize.
 
-### 1. Sistema (`/health`)
+### 4.1. Entrar al contenedor de la aplicación
+
+```bash
+docker compose exec app sh
+```
+
+### 4.2. Ejecutar comandos de base de datos
+
+```bash
+# Ejecutar todas las migraciones (Crea tablas e índices)
+npm run migrate
+
+# Deshacer la última migración (si te equivocas)
+npm run migrate:undo
+
+# Insertar datos de prueba (Usuarios con bcrypt, Mascotas, Clínicas)
+npm run seed
+```
+
+---
+
+## 5. ENDPOINTS DE LA API
+
+Base URL local:
+
+`http://localhost:3000/api/v1`
+
+Todos los endpoints devuelven el formato:
+
+```json
+{
+  "data": {},
+  "meta": {},
+  "requestId": "uuid"
+}
+```
+
+### 5.1. SISTEMA Y MONITOREO
 
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| `GET` | `/health` | Verifica el estado del servidor. Retorna `200 OK`. |
+| `GET` | `/health` | Chequeo rápido de vida del servidor (Usado por AWS ALB). |
+| `GET` | `/ready` | Verifica si la conexión a PostgreSQL está activa. |
 
-### 2. Autenticación y Usuarios (`/auth`)
+### 5.2. AUTENTICACIÓN (`/auth`)
 
-| Método | Endpoint | Descripción | Requisitos |
+| Método | Endpoint | Descripción | Requisitos de Validación (Zod) |
 | --- | --- | --- | --- |
-| `POST` | `/auth/register` | Registra un nuevo usuario en la plataforma. | **Body JSON:** `role` (adopter, shelter, breeder, individual), `fullName`, `city`, `email`, `phone`, `password`, `termsAccepted` (boolean). |
-| `POST` | `/auth/login` | Inicia sesión y devuelve un token JWT. | **Body JSON:** `email`, `password`. |
-| `GET` | `/auth/me` | Verifica el perfil del usuario autenticado. | **Headers:** `Authorization: Bearer <token>` |
+| `POST` | `/auth/register` | Registro de usuario. | Body: `role` (enum), `fullName`, `city`, `email`, `phone`, `password` (8+ chars, Mayúsc, Núm), `termsAccepted` (true). |
+| `POST` | `/auth/login` | Inicio de sesión. Devuelve JWT. | Body: `email`, `password`. (Rate limit estricto: 10 fallos/15min). |
+| `GET` | `/auth/me` | Verifica perfil actual. | Headers: `Authorization: Bearer <token>` |
 
-### 3. Mascotas (`/pets`)
+### 5.3. MASCOTAS (`/pets`)
 
-| Método | Endpoint | Descripción | Requisitos |
+| Método | Endpoint | Descripción | Parámetros / Requisitos |
 | --- | --- | --- | --- |
-| `GET` | `/pets` | Lista todas las mascotas. Permite filtros dinámicos. | **Query Params (opcionales):** `?city=Bogota&breed=Beagle&filter=adopcion` (Filtros soportados: adopcion, criador, cachorros). |
-| `GET` | `/pets/:id` | Muestra el detalle de una mascota por su UUID. | Parámetro de ruta `:id`. |
-| `POST` | `/pets` | Publica una nueva mascota con imagen. | **Headers:** `Authorization: Bearer <token>`. <br>
+| `GET` | `/pets` | Lista mascotas disponibles. | Query: `city`, `breed`, `filter` (adopción, cachorros, criador), `page`, `limit`. |
+| `GET` | `/pets/:id` | Detalle de mascota por UUID. | Params: `id` (Debe ser UUID válido). |
+| `POST` | `/pets` | Publica una mascota con foto. | Headers: Auth. Solo roles `shelter`, `breeder`, `individual`. FormData: Datos mascota + file `image`. |
 
-<br>**Form-Data:** `name`, `breed`, `ageMonths`, `city`, `price`, `adoptionType`, `image` (Archivo binario local). |
+### 5.4. CITAS (`/appointments`)
 
-### 4. Catálogos y Filtros (`/catalogs`)
-
-| Método | Endpoint | Descripción | Requisitos |
+| Método | Endpoint | Descripción | Parámetros / Requisitos |
 | --- | --- | --- | --- |
-| `GET` | `/catalogs/filters` | Obtiene listas de razas y ciudades únicas registradas. | Útil para llenar los menús desplegables del frontend. |
-| `GET` | `/catalogs/clinics` | Lista las clínicas veterinarias activas. | **Query Params (opcionales):** `?city=Medellin` para filtrar por ciudad. |
+| `POST` | `/appointments` | Solicita una cita (adoptante). | Headers: Auth. Body: `petId`, `clinicId`, `meetingDate` (> 1h futuro). |
+| `GET` | `/appointments` | Lista las citas vinculadas. | Headers: Auth. Devuelve citas hechas por el usuario o solicitadas a sus mascotas. |
+| `PATCH` | `/appointments/:id/status` | Actualiza el estado. | Headers: Auth. Body: `status` (`confirmed`, `cancelled`, `completed`). Regido por máquina de estados. |
 
-### 5. Agendamiento de Citas (`/appointments`)
+### 5.5. DASHBOARD DE REFUGIOS (`/dashboard`)
 
-| Método | Endpoint | Descripción | Requisitos |
+| Método | Endpoint | Descripción | Parámetros / Requisitos |
 | --- | --- | --- | --- |
-| `POST` | `/appointments` | Agendar un encuentro en una veterinaria. | **Headers:** `Authorization: Bearer <token>` <br>
+| `GET` | `/dashboard` | Estadísticas del refugio/criador. | Headers: Auth. Solo roles `shelter`, `breeder`. Retorna contadores y próximas citas. |
 
-<br>**Body JSON:** `petId`, `clinicId`, `meetingDate` (ISO 8601), `notes`. |
-| `GET` | `/appointments` | Lista las citas del usuario. | **Headers:** `Authorization: Bearer <token>`. Retorna las citas del adoptante, o las citas agendadas hacia las mascotas de un refugio/criador. |
-| `PUT` | `/appointments/:id/status` | Actualiza el estado de una cita. | **Headers:** `Authorization: Bearer <token>` <br>
+### 5.6. CATÁLOGOS (`/catalogs`)
 
-<br>**Body JSON:** `status` ('confirmed', 'cancelled', 'completed'). Si se cancela, la mascota vuelve a estado `available`. |
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| `GET` | `/catalogs/filters` | Retorna razas y ciudades en uso. |
+| `GET` | `/catalogs/clinics` | Lista veterinarias activas. (Acepta `?city=`). |
+
+### 5.7. CONTRATOS (`/contracts`)
+
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| `GET` | `/contracts/:appointmentId` | Descarga el PDF del contrato de adopción (generado cuando la cita pasó a `completed`). |
 
 ---
 
-## 🔮 Próximas Características
+## 6. PRÓXIMAS CARACTERÍSTICAS Y ROADMAP
 
-* **Integración de Almacenamiento en la Nube:** Próximamente se reemplazará el gestor de subida de imágenes local (`multer` en la carpeta `public/uploads`) por una integración nativa y optimizada con **Google Drive API** o **Cloudinary** para centralizar la entrega de *assets* estáticos y aliviar la carga en el servidor.
-* **Geolocalización con PostGIS:** Expansión del esquema actual de ciudades para incluir radios de proximidad exactos entre adoptantes y clínicas veterinarias mediante coordenadas.
-
-```
-
-```
+1. **Migración de Storage (Imágenes):** Actualmente las imágenes se procesan con Sharp y se guardan temporalmente en `/public/uploads`. Para un entorno sin estado (*Stateless*), se activará el proveedor `s3.provider.js` guardando los assets en un Bucket de AWS servidos por CloudFront.
+2. **Desacoplamiento de Puppeteer:** Mover la generación de PDFs (`pdf.service.js`) a un Worker de AWS SQS/Fargate para evitar cuellos de botella en la RAM del contenedor principal de la API.
+3. **Refresh Tokens:** Implementación de persistencia de sesión a largo plazo almacenando familias de hashes en la base de datos (previniendo robo de sesiones).
+4. **Autenticación 2FA & Verificación:** Envío de correos de bienvenida y verificación de refugios mediante Nodemailer (Resend/Amazon SES).
+5. **OpenAPI / Swagger:** Autogenerar la página interactiva de documentación web a partir de los esquemas creados con Zod.
