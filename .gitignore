@@ -1,0 +1,17 @@
+# Dependencias
+node_modules/
+
+# Entorno y credenciales
+.env
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Archivos del SO
+.DS_Store
+Thumbs.db
+
+# Subidas locales (imágenes)
+public/uploads/
