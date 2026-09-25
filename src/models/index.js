@@ -4,6 +4,8 @@ const Pet = require('./Pet');
 const VetClinic = require('./VetClinic');
 const Appointment = require('./Appointment');
 const Contract = require('./Contract');
+const Favorite = require('./Favorite');
+const RefreshToken = require('./RefreshToken');
 
 User.hasMany(Pet, { foreignKey: 'ownerId', as: 'pets' });
 Pet.belongsTo(User, { foreignKey: 'ownerId', as: 'owner' });
@@ -20,4 +22,12 @@ Appointment.belongsTo(VetClinic, { foreignKey: 'clinicId', as: 'clinic' });
 Appointment.hasOne(Contract, { foreignKey: 'appointmentId', as: 'contract' });
 Contract.belongsTo(Appointment, { foreignKey: 'appointmentId', as: 'appointment' });
 
-module.exports = { sequelize, User, Pet, VetClinic, Appointment, Contract };
+User.hasMany(Favorite, { foreignKey: 'userId', as: 'favorites' });
+Favorite.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+Pet.hasMany(Favorite, { foreignKey: 'petId', as: 'favoritedBy' });
+Favorite.belongsTo(Pet, { foreignKey: 'petId', as: 'pet' });
+
+User.hasMany(RefreshToken, { foreignKey: 'userId', as: 'refreshTokens' });
+RefreshToken.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
+module.exports = { sequelize, User, Pet, VetClinic, Appointment, Contract, Favorite, RefreshToken };

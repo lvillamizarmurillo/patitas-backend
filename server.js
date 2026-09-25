@@ -5,6 +5,8 @@ const { sequelize } = require('./src/models');
 
 async function start() {
   await sequelize.authenticate();
+  logger.info('🐘 Conexión a la base de datos establecida.');
+
   const server = app.listen(env.PORT, () => logger.info(`🚀 API en puerto ${env.PORT}`));
 
   const shutdown = (signal) => {

@@ -6,5 +6,7 @@ router.use('/catalogs', require('../modules/catalogs/catalog.routes'));
 router.use('/appointments', require('../modules/appointments/appointment.routes'));
 router.use('/contracts', require('../modules/contracts/contract.routes'));
 router.use('/dashboard', require('../modules/dashboard/dashboard.routes'));
+router.use('/favorites', require('../modules/favorites/favorite.routes'));
+router.use('/admin', require('../modules/admin/admin.routes'));
 
 module.exports = router;

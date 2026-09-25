@@ -7,6 +7,8 @@ const { loginLimiter, registerLimiter } = require('../../middlewares/rate-limit.
 
 router.post('/register', registerLimiter, validate(s.register), ctrl.register);
 router.post('/login', loginLimiter, validate(s.login), ctrl.login);
+router.post('/refresh', ctrl.refresh);
+router.post('/logout', authMiddleware, ctrl.logout);
 router.get('/me', authMiddleware, ctrl.me);
 
 module.exports = router;

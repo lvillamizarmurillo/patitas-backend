@@ -7,7 +7,7 @@ exports.authMiddleware = (req, _res, next) => {
   if (scheme !== 'Bearer' || !token) return next(AppError.unauthorized('Token no proporcionado'));
   try {
     const p = jwt.verify(token, env.JWT_SECRET, { algorithms: ['HS256'], issuer: 'patitas-api' });
-    req.user = { id: p.sub, role: p.role }; // ya no viaja el email dentro del token
+    req.user = { id: p.sub, role: p.role };
     next();
   } catch {
     next(AppError.unauthorized('Token inválido o expirado'));

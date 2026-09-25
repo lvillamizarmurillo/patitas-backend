@@ -11,7 +11,6 @@ function normalize(err) {
   }
   if (err.type === 'entity.too.large') return new AppError('Payload demasiado grande', 413, 'PAYLOAD_TOO_LARGE');
   if (err.type === 'entity.parse.failed') return AppError.badRequest('JSON malformado');
-  // Orden importa: UniqueConstraintError extiende ValidationError; FK extiende DatabaseError
   if (err instanceof UniqueConstraintError) return AppError.conflict('El registro ya existe');
   if (err instanceof ForeignKeyConstraintError) return AppError.badRequest('Referencia inválida');
   if (err instanceof ValidationError) {
@@ -25,10 +24,7 @@ function normalize(err) {
 
 module.exports = (err, req, res, _next) => {
   const known = normalize(err);
-  if (!known) req.log.error({ err }, 'Error no controlado');
+  if (!known) (req.log || console).error({ err }, 'Error no controlado');
   const e = known || new AppError('Error interno del servidor', 500, 'INTERNAL_ERROR');
-  res.status(e.status).json({
-    error: { code: e.code, message: e.message, details: e.details },
-    requestId: req.id,
-  });
+  res.status(e.status).json({ error: { code: e.code, message: e.message, details: e.details }, requestId: req.id });
 };

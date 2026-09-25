@@ -1,8 +1,6 @@
 const { sequelize, Appointment, Pet, User, VetClinic } = require('../../models');
 const AppError = require('../../utils/AppError');
-const logger = require('../../config/logger');
 
-// estado actual -> nuevo estado -> quién puede hacerlo
 const TRANSITIONS = {
   pending:   { confirmed: ['owner'],  cancelled: ['owner', 'adopter'] },
   confirmed: { completed: ['owner'],  cancelled: ['owner', 'adopter'] },
@@ -33,7 +31,7 @@ exports.updateStatus = (user, id, newStatus) =>
     const pet = await Pet.findByPk(appt.petId, { transaction: t, lock: t.LOCK.UPDATE });
 
     const actor = pet.ownerId === user.id ? 'owner' : appt.adopterId === user.id ? 'adopter' : null;
-    if (!actor) throw AppError.notFound('Cita no encontrada'); // no revela que existe
+    if (!actor) throw AppError.notFound('Cita no encontrada');
 
     const allowed = TRANSITIONS[appt.status][newStatus];
     if (!allowed) throw AppError.conflict(`No se puede pasar de "${appt.status}" a "${newStatus}"`);
@@ -43,18 +41,14 @@ exports.updateStatus = (user, id, newStatus) =>
     if (newStatus === 'cancelled') await pet.update({ status: 'available' }, { transaction: t });
     if (newStatus === 'completed') {
       await pet.update({ status: 'adopted' }, { transaction: t });
-      // Solo tras el COMMIT; si falla el PDF no se revierte la adopción
-      t.afterCommit(() => {
-        require('../contracts/contract.service').generateForAppointment(appt.id)
-          .catch((err) => logger.error({ err, appointmentId: appt.id }, 'Falló la generación del contrato'));
-      });
+      t.afterCommit(() => require('../../queue/contract-queue').enqueueContractGeneration(appt.id));
     }
     return appt;
   });
 
 exports.list = async (user, { status, page, limit }) => {
   const where = status ? { status } : {};
-  const petInclude = { model: Pet, as: 'pet', attributes: ['id', 'name', 'imageUrl'], required: true };
+  const petInclude = { model: Pet, as: 'pet', attributes: ['id', 'name', 'imageUrl', 'ownerId'], required: true };
   if (user.role === 'adopter') where.adopterId = user.id;
   else petInclude.where = { ownerId: user.id };
 
@@ -67,4 +61,19 @@ exports.list = async (user, { status, page, limit }) => {
     ],
   });
   return { items: rows, meta: { page, limit, total: count } };
+};
+
+exports.getById = async (user, id) => {
+  const appt = await Appointment.findByPk(id, {
+    include: [
+      { model: Pet, as: 'pet', include: [{ model: User, as: 'owner', attributes: ['id', 'fullName', 'phone'] }] },
+      { model: VetClinic, as: 'clinic' },
+      { model: User, as: 'adopter', attributes: ['id', 'fullName', 'email', 'phone'] },
+    ],
+  });
+  if (!appt) throw AppError.notFound('Cita no encontrada');
+  const isOwner = appt.pet.ownerId === user.id;
+  const isAdopter = appt.adopterId === user.id;
+  if (!isOwner && !isAdopter) throw AppError.notFound('Cita no encontrada');
+  return appt;
 };

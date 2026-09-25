@@ -9,7 +9,7 @@ const getBrowser = () =>
   }));
 
 exports.htmlToPdf = async (html) => {
-  const browser = await getBrowser(); // un solo navegador reutilizado, una página por trabajo
+  const browser = await getBrowser();
   const page = await browser.newPage();
   try {
     await page.setJavaScriptEnabled(false);

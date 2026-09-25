@@ -7,7 +7,7 @@ services:
       - "3000:3000"
     env_file: .env
     environment:
-      DB_HOST: db          # sobrescribe el localhost del .env
+      DB_HOST: db
       DB_PORT: 5432
     volumes:
       - .:/usr/app
@@ -15,7 +15,7 @@ services:
     depends_on:
       db:
         condition: service_healthy
-    command: sh -c "npm run migrate && npm run dev"
+    command: npm run dev
 
   db:
     image: postgres:15-alpine
@@ -25,7 +25,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
       POSTGRES_DB: ${DB_NAME}
     ports:
-      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - patitas_pgdata:/var/lib/postgresql/data
     healthcheck:

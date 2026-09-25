@@ -13,15 +13,37 @@ exports.list = {
   }),
 };
 
+exports.mine = {
+  query: z.object({
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(50).default(12),
+  }),
+};
+
 exports.create = {
   body: z.object({
     name: z.string().trim().min(1).max(80),
     breed: z.string().trim().min(2).max(80),
+    sex: z.enum(['male', 'female', 'unknown']).default('unknown'),
     ageMonths: z.coerce.number().int().min(0).max(360),
     city: z.string().trim().min(2).max(80),
+    description: z.string().trim().max(1000).optional(),
     adoptionType: z.enum(['adoption', 'sale']).default('adoption'),
     price: z.coerce.number().min(0).max(100_000_000).default(0),
   }).refine((d) => d.adoptionType === 'sale' || d.price === 0, {
     message: 'Una adopción no puede tener precio', path: ['price'],
+  }),
+};
+
+exports.update = {
+  params: idParam.params,
+  body: z.object({
+    name: z.string().trim().min(1).max(80).optional(),
+    breed: z.string().trim().min(2).max(80).optional(),
+    sex: z.enum(['male', 'female', 'unknown']).optional(),
+    description: z.string().trim().max(1000).optional(),
+    ageMonths: z.coerce.number().int().min(0).max(360).optional(),
+    city: z.string().trim().min(2).max(80).optional(),
+    price: z.coerce.number().min(0).max(100_000_000).optional(),
   }),
 };

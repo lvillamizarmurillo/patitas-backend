@@ -1,6 +1,8 @@
 const { z } = require('zod');
 const { uuid, idParam } = require('../../utils/schemas');
 
+exports.byId = idParam;
+
 exports.create = {
   body: z.object({
     petId: uuid,
@@ -9,10 +11,12 @@ exports.create = {
     notes: z.string().trim().max(500).optional(),
   }),
 };
+
 exports.updateStatus = {
   params: idParam.params,
   body: z.object({ status: z.enum(['confirmed', 'cancelled', 'completed']) }),
 };
+
 exports.list = {
   query: z.object({
     status: z.enum(['pending', 'confirmed', 'completed', 'cancelled']).optional(),

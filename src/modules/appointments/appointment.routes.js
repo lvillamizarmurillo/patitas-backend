@@ -8,6 +8,7 @@ const { appointmentLimiter } = require('../../middlewares/rate-limit.middleware'
 router.use(authMiddleware);
 router.post('/', appointmentLimiter, validate(s.create), ctrl.create);
 router.get('/', validate(s.list), ctrl.list);
+router.get('/:id', validate(s.byId), ctrl.getById);
 router.patch('/:id/status', validate(s.updateStatus), ctrl.updateStatus);
 
 module.exports = router;

@@ -22,9 +22,5 @@ exports.getOwnerDashboard = async (ownerId) => {
   const pets = { available: 0, in_process: 0, adopted: 0 };
   byStatus.forEach((r) => { pets[r.status] = Number(r.total); });
 
-  return {
-    pets: { ...pets, total: pets.available + pets.in_process + pets.adopted },
-    appointments: { pending, upcoming },
-    history,
-  };
+  return { pets: { ...pets, total: pets.available + pets.in_process + pets.adopted }, appointments: { pending, upcoming }, history };
 };

@@ -12,7 +12,7 @@ const make = (windowMinutes, limit, extra = {}) =>
   });
 
 exports.globalLimiter = make(15, 300);
-exports.loginLimiter = make(15, 10, { skipSuccessfulRequests: true }); // solo cuenta los fallos
+exports.loginLimiter = make(15, 10, { skipSuccessfulRequests: true });
 exports.registerLimiter = make(60, 5);
 exports.uploadLimiter = make(60, 20);
 exports.appointmentLimiter = make(60, 30);

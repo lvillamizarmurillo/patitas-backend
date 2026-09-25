@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>
+  body{font-family:Helvetica,Arial,sans-serif;color:#222;font-size:13px;line-height:1.6}
+  h1{font-size:18px;border-bottom:2px solid #1c6b45;padding-bottom:8px}
+  .box{border:1px solid #ccc;padding:12px;margin:12px 0;border-radius:6px}
+  .footer{margin-top:40px;font-size:11px;color:#666}
+</style></head>
+<body>
+  <h1>Contrato de Adopción / Entrega — Patitas</h1>
+  <p>Número de contrato: <strong><%= contractNumber %></strong> — Fecha: <%= date %></p>
+  <div class="box"><strong>Mascota:</strong> <%= pet.name %> (<%= pet.breed %>, <%= pet.ageMonths %> meses)<br><strong>Ciudad:</strong> <%= pet.city %></div>
+  <div class="box"><strong>Entregado por:</strong> <%= owner.fullName %> — <%= owner.email %> — <%= owner.phone %></div>
+  <div class="box"><strong>Recibido por:</strong> <%= adopter.fullName %> — <%= adopter.email %> — <%= adopter.phone %></div>
+  <div class="box"><strong>Lugar de entrega:</strong> <%= clinic.name %>, <%= clinic.address %>, <%= clinic.city %></div>
+  <p>Ambas partes certifican que la entrega de la mascota descrita se realizó en las condiciones acordadas a través de la plataforma Patitas, en la fecha indicada.</p>
+  <div class="footer">Documento generado automáticamente por Patitas — Este documento no constituye firma electrónica certificada en los términos de la Ley 527 de 1999.</div>
+</body>
+</html>

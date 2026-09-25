@@ -8,7 +8,7 @@ const AppError = require('../../utils/AppError');
 
 exports.generateForAppointment = async (appointmentId) => {
   const existing = await Contract.findOne({ where: { appointmentId } });
-  if (existing) return existing; // idempotente: si se reintenta, no duplica
+  if (existing) return existing;
 
   const appt = await Appointment.findByPk(appointmentId, {
     include: [
@@ -26,8 +26,8 @@ exports.generateForAppointment = async (appointmentId) => {
   });
 
   const pdf = await htmlToPdf(html);
-  const sha256 = crypto.createHash('sha256').update(pdf).digest('hex'); // prueba de integridad
-  const { key } = await storage.upload(pdf, { folder: 'contracts', ext: 'pdf', private: true });
+  const sha256 = crypto.createHash('sha256').update(pdf).digest('hex');
+  const { key } = await storage.upload(pdf, { folder: 'contracts', ext: 'pdf', resourceType: 'raw', private: true });
 
   return Contract.create({ appointmentId, contractNumber, pdfKey: key, sha256 });
 };
