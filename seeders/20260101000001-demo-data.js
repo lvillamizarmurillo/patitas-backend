@@ -4,6 +4,11 @@ const { randomUUID } = require('crypto');
 
 module.exports = {
   async up(qi) {
+    // Datos de demo con contraseñas públicas (están en el README): jamás en producción.
+    // Para el admin real usa `npm run create-admin`.
+    if (process.env.NODE_ENV === 'production' && process.env.ALLOW_DEMO_SEED !== 'true') {
+      throw new Error('El seed de demo está bloqueado en producción. Usa `npm run create-admin`.');
+    }
     const hash = (pwd) => bcrypt.hashSync(pwd, 12);
     const shelterId = randomUUID();
     const adopterId = randomUUID();

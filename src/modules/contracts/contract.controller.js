@@ -3,7 +3,7 @@ const storage = require('../../providers/storage');
 const AppError = require('../../utils/AppError');
 
 exports.download = async (req, res) => {
-  const { appointmentId } = req.params;
+  const { appointmentId } = req.valid.params;
   const contract = await Contract.findOne({ where: { appointmentId } });
   if (!contract) throw AppError.notFound('El contrato aún no se ha generado');
 

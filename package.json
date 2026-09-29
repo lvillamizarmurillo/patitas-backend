@@ -2,17 +2,25 @@
   "name": "patitas-backend",
   "version": "1.0.0",
   "main": "server.js",
-  "engines": { "node": ">=20" },
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "start": "node server.js",
+    "start:prod": "node scripts/start-prod.js",
     "dev": "nodemon -L server.js",
     "migrate": "sequelize-cli db:migrate",
+    "migrate:status": "sequelize-cli db:migrate:status",
     "migrate:undo": "sequelize-cli db:migrate:undo",
     "seed": "sequelize-cli db:seed:all",
+    "create-admin": "node scripts/create-admin.js",
     "test": "jest --runInBand"
   },
   "license": "ISC",
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1142.0",
+    "@aws-sdk/client-sqs": "^3.1142.0",
+    "@aws-sdk/s3-request-presigner": "^3.1142.0",
     "bcryptjs": "^3.0.2",
     "cloudinary": "^2.5.1",
     "compression": "^1.8.0",
@@ -24,15 +32,16 @@
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^1.4.5-lts.1",
-    "nodemailer": "^6.9.16",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.12",
     "pg": "^8.13.3",
     "pg-hstore": "^2.3.4",
     "pino": "^9.6.0",
     "pino-http": "^10.4.0",
-    "puppeteer-core": "^24.3.0",
+    "puppeteer-core": "^25.12.0",
     "sequelize": "^6.37.5",
-    "sharp": "^0.33.5",
+    "sequelize-cli": "^6.6.5",
+    "sharp": "^0.35.5",
     "zod": "^3.24.2"
   },
   "devDependencies": {
@@ -41,7 +50,6 @@
     "nodemon": "^3.1.9",
     "pino-pretty": "^13.0.0",
     "prettier": "^3.5.2",
-    "sequelize-cli": "^6.6.2",
     "supertest": "^7.0.0"
   }
 }

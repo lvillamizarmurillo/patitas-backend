@@ -20,7 +20,7 @@ exports.generateForAppointment = async (appointmentId) => {
   if (!appt || appt.status !== 'completed') throw AppError.conflict('La cita no está completada');
 
   const contractNumber = `PAT-${new Date().getFullYear()}-${appt.id.slice(0, 8).toUpperCase()}`;
-  const html = await ejs.renderFile(path.join(__dirname, 'templates/contract.ejs'), {
+  const html = await ejs.renderFile(path.join(__dirname, 'template/contract.ejs'), {
     contractNumber, pet: appt.pet, owner: appt.pet.owner, adopter: appt.adopter, clinic: appt.clinic,
     date: new Date().toLocaleDateString('es-CO', { dateStyle: 'long' }),
   });

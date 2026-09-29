@@ -1,13 +1,13 @@
 const service = require('./auth.service');
 const env = require('../../config/env');
 
-const cookieOpts = {
+const cookieBase = {
   httpOnly: true,
-  secure: env.NODE_ENV === 'production',
-  sameSite: 'strict',
+  secure: env.NODE_ENV === 'production' || env.COOKIE_SAMESITE === 'none',
+  sameSite: env.COOKIE_SAMESITE,
   path: '/api/v1/auth',
-  maxAge: 30 * 24 * 60 * 60 * 1000,
 };
+const cookieOpts = { ...cookieBase, maxAge: 30 * 24 * 60 * 60 * 1000 };
 
 exports.register = async (req, res) => {
   const { user, accessToken, refreshToken } = await service.register(req.valid.body, req.headers['user-agent']);
@@ -29,7 +29,7 @@ exports.refresh = async (req, res) => {
 
 exports.logout = async (req, res) => {
   await service.logout(req.cookies?.refreshToken);
-  res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+  res.clearCookie('refreshToken', cookieBase);
   res.status(204).send();
 };
 
@@ -49,6 +49,6 @@ exports.forgotPassword = async (req, res) => {
 
 exports.resetPassword = async (req, res) => {
   await service.resetPassword(req.valid.body);
-  res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+  res.clearCookie('refreshToken', cookieBase);
   res.json({ data: { message: 'Contraseña actualizada. Inicia sesión de nuevo.' } });
 };
