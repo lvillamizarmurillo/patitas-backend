@@ -3,7 +3,7 @@ const ctrl = require('./pet.controller');
 const s = require('./pet.schemas');
 const validate = require('../../middlewares/validate.middleware');
 const { authMiddleware, requireRole } = require('../../middlewares/auth.middleware');
-const { upload, processImage } = require('../../middlewares/upload.middleware');
+const { petImages, processImage } = require('../../middlewares/upload.middleware');
 const { uploadLimiter } = require('../../middlewares/rate-limit.middleware');
 
 // /mine va ANTES de /:id, si no Express intenta leer "mine" como UUID
@@ -15,17 +15,17 @@ router.post('/',
   authMiddleware,
   requireRole('shelter', 'breeder', 'individual'),
   uploadLimiter,
-  upload.single('image'),
-  processImage,
+  petImages, // gallery (1-3) + motherPhoto + fatherPhoto
   validate(s.create),
+  processImage,
   ctrl.create);
 
 router.patch('/:id',
   authMiddleware,
   uploadLimiter,
-  upload.single('image'),
-  processImage,
+  petImages,
   validate(s.update),
+  processImage,
   ctrl.update);
 
 router.delete('/:id', authMiddleware, validate(s.byId), ctrl.remove);

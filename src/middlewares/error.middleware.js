@@ -5,9 +5,12 @@ const AppError = require('../utils/AppError');
 function normalize(err) {
   if (err instanceof AppError) return err;
   if (err instanceof multer.MulterError) {
-    return err.code === 'LIMIT_FILE_SIZE'
-      ? new AppError('La imagen supera los 5 MB', 413, 'FILE_TOO_LARGE')
-      : AppError.badRequest(`Error al subir el archivo (${err.code})`);
+    if (err.code === 'LIMIT_FILE_SIZE') return new AppError('La imagen supera los 5 MB', 413, 'FILE_TOO_LARGE');
+    if (err.code === 'LIMIT_FILE_COUNT') return AppError.badRequest('Máximo 5 imágenes por publicación');
+    if (err.code === 'LIMIT_UNEXPECTED_FILE') {
+      return AppError.badRequest(`Campo de imagen no permitido o con demasiados archivos: "${err.field}"`);
+    }
+    return AppError.badRequest(`Error al subir el archivo (${err.code})`);
   }
   if (err.type === 'entity.too.large') return new AppError('Payload demasiado grande', 413, 'PAYLOAD_TOO_LARGE');
   if (err.type === 'entity.parse.failed') return AppError.badRequest('JSON malformado');

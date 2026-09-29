@@ -17,16 +17,16 @@ exports.getById = async (req, res) => {
 
 // 4. CREAR MASCOTA
 exports.create = async (req, res) => {
-  res.status(201).json({ data: await service.create(req.user, req.valid.body, req.file) });
+  res.status(201).json({ data: await service.create(req.user, req.valid.body, req.files) });
 };
 
 // 5. EDITAR MASCOTA (solo el dueño)
 exports.update = async (req, res) => {
-  res.json({ data: await service.update(req.user, req.params.id, req.valid.body, req.file) });
+  res.json({ data: await service.update(req.user, req.valid.params.id, req.valid.body, req.files) });
 };
 
 // 6. ELIMINAR MASCOTA (solo el dueño, y no si tiene una cita activa)
 exports.remove = async (req, res) => {
-  await service.remove(req.user, req.params.id);
+  await service.remove(req.user, req.valid.params.id);
   res.status(204).send();
 };

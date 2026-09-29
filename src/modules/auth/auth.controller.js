@@ -34,3 +34,21 @@ exports.logout = async (req, res) => {
 };
 
 exports.me = async (req, res) => res.json({ data: await service.me(req.user.id) });
+
+exports.updateMe = async (req, res) => res.json({ data: await service.updateMe(req.user.id, req.valid.body) });
+
+exports.changePassword = async (req, res) => {
+  await service.changePassword(req.user.id, req.valid.body, req.cookies?.refreshToken);
+  res.status(204).send();
+};
+
+exports.forgotPassword = async (req, res) => {
+  await service.forgotPassword(req.valid.body);
+  res.json({ data: { message: 'Si el correo está registrado, te enviamos un enlace para restablecer la contraseña.' } });
+};
+
+exports.resetPassword = async (req, res) => {
+  await service.resetPassword(req.valid.body);
+  res.clearCookie('refreshToken', { path: '/api/v1/auth' });
+  res.json({ data: { message: 'Contraseña actualizada. Inicia sesión de nuevo.' } });
+};

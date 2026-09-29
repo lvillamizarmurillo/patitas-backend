@@ -19,6 +19,7 @@ const schema = z.object({
   JWT_EXPIRES_IN: z.string().default('15m'),
 
   CORS_ORIGINS: z.string().default('http://localhost:5173'),
+  FRONTEND_URL: z.string().url().default('http://localhost:5173'), // base de los links que van en los correos
 
   STORAGE_DRIVER: z.enum(['local', 'cloudinary', 's3']).default('local'),
   CLOUDINARY_URL: z.string().optional(),
@@ -31,6 +32,7 @@ const schema = z.object({
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
   MAIL_FROM: z.string().default('no-reply@patitas.app'),
+  SUPPORT_EMAIL: z.string().email().optional(), // destino de "Escríbenos"; vacío = solo se guarda en BD
 
   CONTRACT_QUEUE_URL: z.string().optional(), // vacío hoy: el PDF se genera inline
 }).refine(

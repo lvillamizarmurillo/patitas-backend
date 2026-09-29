@@ -53,7 +53,7 @@ Código organizado por **dominios de negocio**, no por capas técnicas (no hay `
 
 ### `src/models/`
 
-- **`index.js`**: centraliza TODAS las relaciones (`hasMany`, `belongsTo`) entre `User`, `Pet`, `VetClinic`, `Appointment`, `Contract`, `Favorite` y `RefreshToken`.
+- **`index.js`**: centraliza TODAS las relaciones (`hasMany`, `belongsTo`) entre `User`, `Pet`, `PetImage`, `VetClinic`, `Appointment`, `Contract`, `Favorite`, `RefreshToken`, `PasswordResetToken`, `NewsletterSubscriber` y `SupportMessage`.
 - Cada modelo usa `paranoid: true` (soft delete) donde aplica y *hooks* de Sequelize (ej. hashear password en `User`).
 
 ### `src/middlewares/`
@@ -62,7 +62,7 @@ Código organizado por **dominios de negocio**, no por capas técnicas (no hay `
 - **`validate.middleware.js`**: pasa `body`/`query`/`params` por Zod y deja la data limpia en `req.valid`.
 - **`error.middleware.js`**: normaliza errores de Sequelize/Multer/Zod a un JSON consistente.
 - **`rate-limit.middleware.js`**: límites por endpoint (login, registro, uploads, citas).
-- **`upload.middleware.js`**: Multer en memoria + Sharp (WebP, máx 1600px, sin metadatos).
+- **`upload.middleware.js`**: Multer en memoria (`petImages`: campos `gallery` 1-3, `motherPhoto`, `fatherPhoto`; máx 5 archivos de 5 MB) + Sharp (WebP, máx 1600px, sin metadatos).
 
 ### `src/providers/storage/`
 
@@ -91,13 +91,15 @@ Punto único que monta todos los routers de `src/modules/*`. **Sin este archivo 
 
 Cada módulo sigue **Ruta → Schema (Zod) → Controller → Service**:
 
-- **`auth/`**: registro, login, refresh token con rotación (detección de robo por reutilización), logout, `/me`.
-- **`pets/`**: CRUD completo (crear, listar, detalle, editar, eliminar, "mis mascotas"), con `Op.iLike` para búsquedas.
+- **`auth/`**: registro, login, refresh token con rotación (detección de robo por reutilización), logout, `/me` (ver y editar perfil), cambio de contraseña y recuperación por correo.
+- **`pets/`**: CRUD completo (crear, listar, detalle, editar, eliminar, "mis mascotas"), con `Op.iLike` para búsquedas. Cada publicación lleva galería (1-3 fotos) + foto de la madre + foto del padre en la tabla `PetImages`.
 - **`appointments/`**: agendamiento con transacción SQL + bloqueo de fila (`FOR UPDATE`) para evitar doble reserva; máquina de estados estricta (`pending → confirmed/cancelled → completed/cancelled`).
 - **`contracts/`**: genera el PDF (Puppeteer + EJS) cuando una cita pasa a `completed`, y expone descarga vía URL firmada temporal.
 - **`favorites/`**: guardar/quitar mascotas favoritas por usuario.
-- **`admin/`**: verificación de refugios/criadores (`isVerified`), acceso restringido al rol `admin`.
-- **`dashboard/`**: métricas del refugio en 4 consultas paralelas (`Promise.all`).
+- **`admin/`**: verificación de refugios/criadores (`isVerified`), listado de usuarios y de todas las citas; acceso restringido al rol `admin`.
+- **`dashboard/`**: métricas del publicador (refugio, criador o particular) en 4 consultas paralelas (`Promise.all`).
+- **`newsletter/`**: suscripción pública e idempotente al boletín de la landing.
+- **`support/`**: formulario "Escríbenos"; guarda el mensaje y lo reenvía a `SUPPORT_EMAIL`.
 - **`catalogs/`**: razas, ciudades y clínicas para los filtros del frontend.
 
 ---
@@ -129,6 +131,7 @@ JWT_SECRET=minimo_32_caracteres_para_produccion_cambia_esto
 JWT_EXPIRES_IN=15m
 
 CORS_ORIGINS=http://localhost:5173,http://localhost:3000
+FRONTEND_URL=http://localhost:5173   # base de los links de los correos
 
 STORAGE_DRIVER=cloudinary
 CLOUDINARY_URL=cloudinary://API_KEY:API_SECRET@CLOUD_NAME
@@ -138,7 +141,10 @@ SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
 MAIL_FROM=no-reply@patitas.app
+SUPPORT_EMAIL=                      # destino de "Escríbenos" (vacío = solo se guarda en BD)
 ```
+
+Sin `SMTP_HOST` no se envían correos. En `NODE_ENV=development` el enlace de recuperación de contraseña se imprime en el log para poder probar el flujo.
 
 ### 3.3. Levantar
 
@@ -191,15 +197,19 @@ Todos los endpoints devuelven `{ "data": {}, "meta"?: {}, "requestId": "uuid" }`
 | POST | `/auth/refresh` | Rota el refresh token y entrega un nuevo access token. |
 | POST | `/auth/logout` | Revoca el refresh token actual. |
 | GET | `/auth/me` | Perfil del usuario autenticado. |
+| PATCH | `/auth/me` | Edita `fullName`, `city`, `phone` y/o `email` (al menos uno). Cambiar `email` exige `currentPassword`. |
+| PATCH | `/auth/me/password` | Cambia la contraseña (`currentPassword`, `newPassword`) y cierra las demás sesiones. |
+| POST | `/auth/forgot-password` | Envía un enlace de recuperación (vence en 1h). Siempre responde 200. Rate limit: 3/h por IP. |
+| POST | `/auth/reset-password` | Aplica `newPassword` con el `token` del enlace y revoca todas las sesiones. Rate limit: 10/h por IP. |
 
 ### 5.3. Mascotas (`/pets`)
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| GET | `/pets` | Lista con filtros `city`, `breed`, `filter` (`adopcion`/`cachorros`/`criador`), `page`, `limit`. |
+| GET | `/pets` | Lista con filtros `city`, `breed`, `filter` (`adopcion`/`cachorros`/`criador`), `page`, `limit`. Cada `owner` incluye `isVerified`. |
 | GET | `/pets/mine` | Mascotas publicadas por el usuario autenticado. |
-| GET | `/pets/:id` | Detalle por UUID. |
-| POST | `/pets` | Publica una mascota (roles `shelter`, `breeder`, `individual`). FormData + campo `image`. |
-| PATCH | `/pets/:id` | Edita (solo el dueño). |
+| GET | `/pets/:id` | Detalle por UUID, con `images: [{ id, url, kind, sortOrder }]` (`kind`: `gallery`/`mother`/`father`). |
+| POST | `/pets` | Publica una mascota (roles `shelter`, `breeder`, `individual`). FormData con `gallery` (1-3 archivos, obligatorio), `motherPhoto` y `fatherPhoto` (obligatorios). Máx 5 imágenes. La primera de la galería queda como `imageUrl` (portada). |
+| PATCH | `/pets/:id` | Edita (solo el dueño). Imágenes opcionales: `gallery` reemplaza toda la galería; `motherPhoto`/`fatherPhoto` reemplazan solo esa foto. |
 | DELETE | `/pets/:id` | Elimina (solo el dueño, y solo si no tiene cita activa). |
 
 ### 5.4. Citas (`/appointments`)
@@ -223,11 +233,13 @@ Todos los endpoints devuelven `{ "data": {}, "meta"?: {}, "requestId": "uuid" }`
 | GET | `/admin/organizations?status=pending` | Lista refugios/criadores por estado de verificación. |
 | PATCH | `/admin/organizations/:id/verify` | Verifica una organización (envía correo si SMTP está configurado). |
 | PATCH | `/admin/organizations/:id/revoke` | Revoca la verificación. |
+| GET | `/admin/users?role=&search=&page=&limit=` | Usuarios paginados; `search` busca en nombre y correo. |
+| GET | `/admin/appointments?status=&page=&limit=` | Todas las citas del sistema con `pet` (+`owner`), `clinic` y `adopter`. |
 
 ### 5.7. Dashboard (`/dashboard`)
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| GET | `/dashboard` | Métricas del refugio/criador autenticado. |
+| GET | `/dashboard` | Métricas del refugio, criador o particular (`individual`) autenticado. |
 
 ### 5.8. Catálogos (`/catalogs`)
 | Método | Endpoint | Descripción |
@@ -239,6 +251,17 @@ Todos los endpoints devuelven `{ "data": {}, "meta"?: {}, "requestId": "uuid" }`
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
 | GET | `/contracts/:appointmentId` | URL firmada temporal (5 min) para descargar el PDF del contrato. |
+
+### 5.10. Newsletter (`/newsletter`) — público
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| POST | `/newsletter/subscribe` | `{ email }`. Idempotente (un correo repetido responde 200). Rate limit: 5/h por IP. |
+| POST | `/newsletter/unsubscribe` | `{ email }`. Da de baja; no revela si el correo existía. |
+
+### 5.11. Soporte (`/support`) — público, sesión opcional
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| POST | `/support/contact` | `{ name?, email?, message }`. Con sesión, `name`/`email` salen del usuario si no se envían. Guarda en `SupportMessages` y reenvía a `SUPPORT_EMAIL`. Rate limit: 5/h por IP. |
 
 ---
 
@@ -282,9 +305,18 @@ Nada de esto requiere reescribir código de negocio: es exclusivamente configura
 ✅ **Desacoplamiento de generación de PDF** — implementado vía `t.afterCommit` + `contract-queue.js` (listo para SQS cuando se necesite un worker aparte).
 ✅ **Verificación de organizaciones + notificación por correo** — implementado (`admin` module + `mailer.js`, SMTP opcional).
 ✅ **Favoritos** — implementado.
+✅ **Editar perfil y cambio de contraseña** — `PATCH /auth/me` y `PATCH /auth/me/password`.
+✅ **Recuperación de contraseña** — `PasswordResetToken` (SHA-256, 1h, un solo uso) + revocación de sesiones.
+✅ **Newsletter** — `NewsletterSubscriber`, endpoint público idempotente.
+✅ **Formulario "Escríbenos"** — `SupportMessage` + correo a `SUPPORT_EMAIL`.
+✅ **Galería + fotos de los padres** — tabla `PetImages` (galería 1-3 + madre + padre, máx 5).
+✅ **Insignia de vendedor verificado** — `owner.isVerified` en las respuestas de mascotas.
+✅ **Admin: usuarios y citas** — `GET /admin/users` y `GET /admin/appointments`.
+✅ **Dashboard para `individual`** — ya no recibe 403.
 
 ⏳ **Pendiente**
 1. **Worker real para Puppeteer**: hoy el PDF se genera en el mismo contenedor (fuera de la transacción, así que no bloquea la respuesta al usuario). El día que el tráfico lo justifique, mover a un servicio Fargate separado consumiendo de SQS — la interfaz (`contract-queue.js`) ya está lista para ese cambio.
 2. **OpenAPI/Swagger**: documentar cada endpoint a partir de los schemas Zod ya existentes con `@asteasolutions/zod-to-openapi`.
-3. **2FA**: verificación de correo electrónico obligatoria en el registro (hoy solo se envía notificación al verificar una organización, no hay flujo de verificación de email del adoptante).
+3. **Suspender usuarios desde admin** (`PATCH /admin/users/:id/suspend`): requiere columna `suspendedAt` en `Users` y validarla en login/refresh.
+4. **2FA**: verificación de correo electrónico obligatoria en el registro (hoy solo se envía notificación al verificar una organización, no hay flujo de verificación de email del adoptante).
 4. **Tests automatizados**: Jest + Supertest sobre auth, la máquina de estados de citas y la carrera de doble reserva.

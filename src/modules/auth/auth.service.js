@@ -1,14 +1,18 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { UniqueConstraintError } = require('sequelize');
+const { Op, UniqueConstraintError } = require('sequelize');
 const env = require('../../config/env');
-const { User, RefreshToken } = require('../../models');
+const logger = require('../../config/logger');
+const { sequelize, User, RefreshToken, PasswordResetToken } = require('../../models');
 const AppError = require('../../utils/AppError');
+const mailer = require('../../utils/mailer');
+const { escapeHtml } = require('../../utils/escape');
 const { toUserDTO } = require('./auth.dto');
 
 const DUMMY_HASH = bcrypt.hashSync('patitas-dummy-password', 12);
 const REFRESH_DAYS = 30;
+const RESET_TOKEN_MINUTES = 60;
 const sha256 = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 const signAccessToken = (user) =>
@@ -76,3 +80,87 @@ exports.me = async (userId) => {
   if (!user) throw AppError.notFound('Usuario no encontrado');
   return toUserDTO(user);
 };
+
+// 400 y no 401: un 401 haría que el frontend intente refrescar la sesión o cerrarla
+const wrongPassword = () =>
+  AppError.badRequest('La contraseña actual es incorrecta', [{ field: 'body.currentPassword', message: 'Contraseña incorrecta' }]);
+
+exports.updateMe = async (userId, { currentPassword, ...changes }) => {
+  const user = await User.scope('withPassword').findByPk(userId);
+  if (!user) throw AppError.notFound('Usuario no encontrado');
+
+  // Cambiar el correo equivale a cambiar el login: se exige la contraseña actual
+  if (changes.email && changes.email !== user.email) {
+    if (!currentPassword) {
+      throw AppError.badRequest('Para cambiar el correo debes confirmar tu contraseña actual',
+        [{ field: 'body.currentPassword', message: 'Requerida para cambiar el correo' }]);
+    }
+    if (!(await bcrypt.compare(currentPassword, user.password))) throw wrongPassword();
+  }
+
+  try {
+    await user.update(changes);
+  } catch (err) {
+    if (err instanceof UniqueConstraintError) throw AppError.conflict('El correo ya está registrado');
+    throw err;
+  }
+  return toUserDTO(user);
+};
+
+// Cambia la contraseña y cierra las demás sesiones, dejando viva solo la del dispositivo actual
+exports.changePassword = async (userId, { currentPassword, newPassword }, currentRefreshToken) => {
+  const user = await User.scope('withPassword').findByPk(userId);
+  if (!user) throw AppError.notFound('Usuario no encontrado');
+  if (!(await bcrypt.compare(currentPassword, user.password))) throw wrongPassword();
+
+  await sequelize.transaction(async (t) => {
+    await user.update({ password: newPassword }, { transaction: t });
+    const where = { userId, revokedAt: null };
+    if (currentRefreshToken) where.tokenHash = { [Op.ne]: sha256(currentRefreshToken) };
+    await RefreshToken.update({ revokedAt: new Date() }, { where, transaction: t });
+  });
+};
+
+// Nunca revela si el correo existe: el controller responde lo mismo en ambos casos
+exports.forgotPassword = async ({ email }) => {
+  const user = await User.findOne({ where: { email } });
+  if (!user) return;
+
+  const raw = crypto.randomBytes(32).toString('hex');
+  await sequelize.transaction(async (t) => {
+    // Un solo enlace vigente por usuario: los anteriores quedan invalidados
+    await PasswordResetToken.update({ usedAt: new Date() }, { where: { userId: user.id, usedAt: null }, transaction: t });
+    await PasswordResetToken.create({
+      userId: user.id, tokenHash: sha256(raw),
+      expiresAt: new Date(Date.now() + RESET_TOKEN_MINUTES * 60000),
+    }, { transaction: t });
+  });
+
+  const link = `${env.FRONTEND_URL.replace(/\/$/, '')}/reset-password?token=${raw}`;
+  if (env.NODE_ENV === 'development') logger.info({ link }, 'Enlace de recuperación (solo visible en desarrollo)');
+  mailer.send({
+    to: user.email,
+    subject: 'Recupera tu contraseña de Patitas',
+    html: `<p>Hola ${escapeHtml(user.fullName)},</p>
+      <p>Recibimos una solicitud para restablecer tu contraseña. Este enlace vence en ${RESET_TOKEN_MINUTES} minutos:</p>
+      <p><a href="${link}">Restablecer contraseña</a></p>
+      <p>Si no fuiste tú, ignora este correo: tu contraseña no cambiará.</p>`,
+  }).catch((err) => logger.warn({ err }, 'No se pudo enviar el correo de recuperación'));
+};
+
+exports.resetPassword = ({ token, newPassword }) =>
+  sequelize.transaction(async (t) => {
+    const invalid = () => AppError.badRequest('El enlace es inválido o ya expiró');
+    const record = await PasswordResetToken.findOne({
+      where: { tokenHash: sha256(token) }, transaction: t, lock: t.LOCK.UPDATE,
+    });
+    if (!record || record.usedAt || record.expiresAt < new Date()) throw invalid();
+
+    const user = await User.findByPk(record.userId, { transaction: t });
+    if (!user) throw invalid();
+
+    await user.update({ password: newPassword }, { transaction: t });
+    await record.update({ usedAt: new Date() }, { transaction: t });
+    // Si alguien robó la cuenta, lo sacamos de todos los dispositivos
+    await RefreshToken.update({ revokedAt: new Date() }, { where: { userId: user.id, revokedAt: null }, transaction: t });
+  });

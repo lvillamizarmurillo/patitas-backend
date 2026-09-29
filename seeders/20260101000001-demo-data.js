@@ -10,6 +10,9 @@ module.exports = {
     const adminId = randomUUID();
     const clinic1 = randomUUID();
     const clinic2 = randomUUID();
+    const pet1 = randomUUID();
+    const pet2 = randomUUID();
+    const sampleImg = 'https://res.cloudinary.com/demo/image/upload/sample.jpg';
 
     await qi.bulkInsert('Users', [
       { id: shelterId, role: 'shelter', fullName: 'Refugio Patitas Unidas', city: 'Bogotá',
@@ -34,16 +37,26 @@ module.exports = {
     ]);
 
     await qi.bulkInsert('Pets', [
-      { id: randomUUID(), name: 'Nube', breed: 'Bulldog francés', sex: 'female', ageMonths: 4, city: 'Medellín',
+      { id: pet1, name: 'Nube', breed: 'Bulldog francés', sex: 'female', ageMonths: 4, city: 'Medellín',
         price: 3900000, adoptionType: 'sale', status: 'available', ownerId: shelterId,
         imageUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg', createdAt: new Date(), updatedAt: new Date() },
-      { id: randomUUID(), name: 'Tito', breed: 'Schnauzer', sex: 'male', ageMonths: 24, city: 'Bogotá',
+      { id: pet2, name: 'Tito', breed: 'Schnauzer', sex: 'male', ageMonths: 24, city: 'Bogotá',
         price: 0, adoptionType: 'adoption', status: 'available', ownerId: shelterId,
         imageUrl: 'https://res.cloudinary.com/demo/image/upload/sample.jpg', createdAt: new Date(), updatedAt: new Date() },
+    ]);
+
+    // Galería (1-3) + madre + padre, igual que exige POST /pets. Sin `key`: son URLs públicas de demo.
+    const img = (petId, kind, sortOrder = 0) => ({
+      id: randomUUID(), petId, url: sampleImg, key: null, kind, sortOrder, createdAt: new Date(), updatedAt: new Date(),
+    });
+    await qi.bulkInsert('PetImages', [
+      img(pet1, 'gallery', 0), img(pet1, 'gallery', 1), img(pet1, 'mother'), img(pet1, 'father'),
+      img(pet2, 'gallery', 0), img(pet2, 'mother'), img(pet2, 'father'),
     ]);
   },
 
   async down(qi) {
+    await qi.bulkDelete('PetImages', null);
     await qi.bulkDelete('Pets', null);
     await qi.bulkDelete('VetClinics', null);
     await qi.bulkDelete('Users', null);

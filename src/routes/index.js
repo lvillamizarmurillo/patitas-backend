@@ -8,5 +8,7 @@ router.use('/contracts', require('../modules/contracts/contract.routes'));
 router.use('/dashboard', require('../modules/dashboard/dashboard.routes'));
 router.use('/favorites', require('../modules/favorites/favorite.routes'));
 router.use('/admin', require('../modules/admin/admin.routes'));
+router.use('/newsletter', require('../modules/newsletter/newsletter.routes'));
+router.use('/support', require('../modules/support/support.routes'));
 
 module.exports = router;
