@@ -10,5 +10,6 @@ router.use('/favorites', require('../modules/favorites/favorite.routes'));
 router.use('/admin', require('../modules/admin/admin.routes'));
 router.use('/newsletter', require('../modules/newsletter/newsletter.routes'));
 router.use('/support', require('../modules/support/support.routes'));
+router.use('/alerts', require('../modules/alerts/alert.routes'));
 
 module.exports = router;

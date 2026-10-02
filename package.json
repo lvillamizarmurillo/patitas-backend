@@ -14,7 +14,16 @@
     "migrate:undo": "sequelize-cli db:migrate:undo",
     "seed": "sequelize-cli db:seed:all",
     "create-admin": "node scripts/create-admin.js",
-    "test": "jest --runInBand"
+    "alerts:send": "node scripts/send-search-alerts.js",
+    "smtp:test": "node scripts/test-smtp.js",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --runInBand"
+  },
+  "jest": {
+    "testEnvironment": "node",
+    "globalSetup": "./tests/global-setup.js",
+    "setupFiles": ["./tests/setup-env.js"],
+    "setupFilesAfterEnv": ["./tests/after-env.js"],
+    "testTimeout": 30000
   },
   "license": "ISC",
   "dependencies": {

@@ -5,7 +5,7 @@ const AppError = require('../../utils/AppError');
 const { escapeLike } = require('../../utils/escape');
 const { toPetDTO } = require('./pet.dto');
 
-const OWNER_ATTRS = ['id', 'fullName', 'role', 'isVerified'];
+const OWNER_ATTRS = ['id', 'fullName', 'role', 'isVerified', 'suspendedAt'];
 const imagesInclude = { model: PetImage, as: 'images' };
 // El ENUM de Postgres ordena por declaración: gallery, mother, father
 const IMAGES_ORDER = [[imagesInclude, 'kind', 'ASC'], [imagesInclude, 'sortOrder', 'ASC']];
@@ -47,8 +47,11 @@ exports.list = async ({ city, breed, filter, page, limit }) => {
   if (filter === 'adopcion') where.adoptionType = 'adoption';
   if (filter === 'cachorros') where.ageMonths = { [Op.lte]: 12 };
 
-  const owner = { model: User, as: 'owner', attributes: OWNER_ATTRS };
-  if (filter === 'criador') Object.assign(owner, { where: { role: 'breeder' }, required: true });
+  // Las publicaciones de cuentas suspendidas no se muestran
+  const owner = {
+    model: User, as: 'owner', attributes: OWNER_ATTRS, required: true,
+    where: { suspendedAt: null, ...(filter === 'criador' ? { role: 'breeder' } : {}) },
+  };
 
   const { rows, count } = await Pet.findAndCountAll({
     where, include: [owner], distinct: true,
@@ -69,7 +72,7 @@ exports.getById = async (id) => {
     include: [{ model: User, as: 'owner', attributes: OWNER_ATTRS }, imagesInclude],
     order: IMAGES_ORDER,
   });
-  if (!pet) throw AppError.notFound('Mascota no encontrada');
+  if (!pet || pet.owner?.suspendedAt) throw AppError.notFound('Mascota no encontrada');
   return toPetDTO(pet);
 };
 

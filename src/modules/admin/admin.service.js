@@ -1,7 +1,10 @@
 const { Op } = require('sequelize');
-const { User, Appointment, Pet, VetClinic } = require('../../models');
+const { sequelize, User, Appointment, Pet, VetClinic, RefreshToken } = require('../../models');
+const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const mailer = require('../../utils/mailer');
+const logger = require('../../config/logger');
+const { escapeHtml } = require('../../utils/escape');
 const { escapeLike } = require('../../utils/escape');
 const { toAdminUserDTO } = require('./admin.dto');
 
@@ -17,7 +20,7 @@ exports.verify = async (adminId, orgId) => {
   if (!org) throw AppError.notFound('Organización no encontrada');
   await org.update({ isVerified: true, verifiedAt: new Date(), verifiedBy: adminId });
   mailer.send({
-    to: org.email, subject: 'Tu organización fue verificada en Patitas',
+    to: org.email, subject: `Tu organización fue verificada en ${env.APP_NAME}`,
     html: `<p>Hola ${org.fullName}, tu cuenta ya está verificada y puede publicar mascotas.</p>`,
   }).catch(() => {});
   return org;
@@ -30,9 +33,11 @@ exports.revoke = async (orgId) => {
   return org;
 };
 
-exports.listUsers = async ({ role, search, page, limit }) => {
+exports.listUsers = async ({ role, search, status, page, limit }) => {
   const where = {};
   if (role) where.role = role;
+  if (status === 'active') where.suspendedAt = null;
+  if (status === 'suspended') where.suspendedAt = { [Op.ne]: null };
   if (search) {
     const term = `%${escapeLike(search)}%`;
     where[Op.or] = [{ fullName: { [Op.iLike]: term } }, { email: { [Op.iLike]: term } }];
@@ -58,4 +63,55 @@ exports.listAppointments = async ({ status, page, limit }) => {
     ],
   });
   return { items: rows, meta: { page, limit, total: count, totalPages: Math.ceil(count / limit) } };
+};
+
+const ACTIVE = ['pending', 'confirmed'];
+
+// Suspender: no puede iniciar sesión, se cierran sus sesiones, sus publicaciones dejan de mostrarse
+// y se cancelan sus citas activas (como dueño o como adoptante) para no dejar a nadie esperando.
+exports.suspend = async (adminId, userId, { reason } = {}) => {
+  const user = await User.findByPk(userId);
+  if (!user) throw AppError.notFound('Usuario no encontrado');
+  if (user.role === 'admin') throw AppError.forbidden('No se puede suspender a un administrador');
+  if (user.suspendedAt) return toAdminUserDTO(user);
+
+  await sequelize.transaction(async (t) => {
+    await user.update({ suspendedAt: new Date(), suspendedBy: adminId, suspensionReason: reason ?? null }, { transaction: t });
+    await RefreshToken.update({ revokedAt: new Date() }, { where: { userId, revokedAt: null }, transaction: t });
+
+    const appts = await Appointment.findAll({
+      where: { status: ACTIVE, [Op.or]: [{ adopterId: userId }, { '$pet.ownerId$': userId }] },
+      include: [{ model: Pet, as: 'pet', attributes: ['id', 'ownerId'] }],
+      transaction: t,
+    });
+    for (const appt of appts) {
+      await appt.update({ status: 'cancelled' }, { transaction: t });
+      await Pet.update({ status: 'available' }, { where: { id: appt.petId, status: 'in_process' }, transaction: t });
+    }
+  });
+
+  mailer.send({
+    to: user.email,
+    subject: 'Tu cuenta fue suspendida',
+    html: `<p>Hola ${escapeHtml(user.fullName)}, tu cuenta fue suspendida por un administrador.</p>
+      ${reason ? `<p><strong>Motivo:</strong> ${escapeHtml(reason)}</p>` : ''}
+      <p>Si crees que es un error, responde a este correo o escríbenos desde el formulario de contacto.</p>`,
+  }).catch((err) => logger.warn({ err }, 'No se pudo enviar el aviso de suspensión'));
+
+  return toAdminUserDTO(user);
+};
+
+// Reactivar: vuelve a poder entrar y sus publicaciones reaparecen. Las citas canceladas no se restauran.
+exports.reactivate = async (userId) => {
+  const user = await User.findByPk(userId);
+  if (!user) throw AppError.notFound('Usuario no encontrado');
+  if (!user.suspendedAt) return toAdminUserDTO(user);
+
+  await user.update({ suspendedAt: null, suspendedBy: null, suspensionReason: null });
+  mailer.send({
+    to: user.email,
+    subject: 'Tu cuenta fue reactivada',
+    html: `<p>Hola ${escapeHtml(user.fullName)}, tu cuenta ya está activa de nuevo. Puedes iniciar sesión normalmente.</p>`,
+  }).catch((err) => logger.warn({ err }, 'No se pudo enviar el aviso de reactivación'));
+  return toAdminUserDTO(user);
 };

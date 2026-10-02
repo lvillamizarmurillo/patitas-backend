@@ -19,6 +19,10 @@ const User = sequelize.define('User', {
   isVerified: { type: DataTypes.BOOLEAN, defaultValue: false },
   verifiedAt: { type: DataTypes.DATE },
   verifiedBy: { type: DataTypes.UUID },
+  // Suspensión por admin: no puede iniciar sesión y sus publicaciones se ocultan
+  suspendedAt: { type: DataTypes.DATE },
+  suspendedBy: { type: DataTypes.UUID },
+  suspensionReason: { type: DataTypes.STRING(500) },
 }, {
   timestamps: true,
   paranoid: true,

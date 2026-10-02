@@ -14,6 +14,8 @@ exports.create = (adopter, { petId, clinicId, meetingDate, notes }) =>
     if (!pet) throw AppError.notFound('Mascota no encontrada');
     if (pet.ownerId === adopter.id) throw AppError.badRequest('No puedes agendar una cita para tu propia mascota');
     if (pet.status !== 'available') throw AppError.conflict('La mascota ya no está disponible');
+    const owner = await User.findByPk(pet.ownerId, { attributes: ['suspendedAt'], transaction: t });
+    if (!owner || owner.suspendedAt) throw AppError.conflict('La mascota ya no está disponible');
 
     const clinic = await VetClinic.findOne({ where: { id: clinicId, isActive: true }, transaction: t });
     if (!clinic) throw AppError.notFound('Clínica no encontrada');

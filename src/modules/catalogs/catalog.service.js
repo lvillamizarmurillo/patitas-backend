@@ -1,9 +1,21 @@
-const { Pet, VetClinic } = require('../../models');
+const { Pet, User, VetClinic } = require('../../models');
+
+// Razas y ciudades que hoy tienen algo publicado: solo mascotas disponibles de cuentas no suspendidas
+const distinctAvailable = async (column) => {
+  const rows = await Pet.findAll({
+    attributes: [column],
+    where: { status: 'available' },
+    include: [{ model: User, as: 'owner', attributes: [], where: { suspendedAt: null }, required: true }],
+    group: [`Pet.${column}`],
+    order: [[column, 'ASC']],
+    raw: true,
+  });
+  return rows.map((r) => r[column]);
+};
 
 exports.getFilters = async () => {
-  const breeds = await Pet.findAll({ attributes: ['breed'], group: ['breed'], where: { status: 'available' }, raw: true });
-  const cities = await Pet.findAll({ attributes: ['city'], group: ['city'], raw: true });
-  return { breeds: breeds.map((b) => b.breed), cities: cities.map((c) => c.city) };
+  const [breeds, cities] = await Promise.all([distinctAvailable('breed'), distinctAvailable('city')]);
+  return { breeds, cities };
 };
 
 exports.getClinics = async (city) => {

@@ -10,7 +10,7 @@ Es un **monolito modular por dominios** sobre Node.js 22, Express 5 y PostgreSQL
 
 1. [Arquitectura y stack](#1-arquitectura-y-stack)
 2. [Estructura del proyecto](#2-estructura-del-proyecto)
-3. [Desarrollo local](#3-desarrollo-local)
+3. [Desarrollo local y pruebas](#3-desarrollo-local-y-pruebas)
 4. [Base de datos: migraciones, seed y admin](#4-base-de-datos-migraciones-seed-y-admin)
 5. [Endpoints de la API](#5-endpoints-de-la-api)
 6. [Imágenes de las publicaciones](#6-imágenes-de-las-publicaciones)
@@ -54,9 +54,13 @@ Las respuestas exitosas siempre tienen la forma `{ "data": ..., "meta"?: ... }`.
 ├── server.js                  # Arranque + graceful shutdown (SIGTERM/SIGINT)
 ├── Dockerfile                 # Multi-stage: development / production (última etapa)
 ├── docker-compose.yml         # Node + Postgres para desarrollo local
+├── docker-compose.test.yml    # Suite de pruebas con un Postgres desechable
 ├── scripts/
 │   ├── start-prod.js          # CMD de producción: valida env → aplica migraciones → arranca
-│   └── create-admin.js        # Crea o promueve el admin real (sin el seed de demo)
+│   ├── create-admin.js        # Crea o promueve el admin real (sin el seed de demo)
+│   ├── test-smtp.js           # Verifica el SMTP y envía un correo de prueba
+│   └── send-search-alerts.js  # Corre a mano el job de alertas de búsqueda
+├── tests/                     # Pruebas automatizadas (Jest + Supertest contra Postgres real)
 ├── migrations/                # Esquema versionado (se aplican en orden)
 ├── seeders/                   # Datos de demo (bloqueados en producción)
 └── src/
@@ -67,6 +71,7 @@ Las respuestas exitosas siempre tienen la forma `{ "data": ..., "meta"?: ... }`.
     ├── middlewares/           # auth, validate, upload, rate-limit, error, not-found
     ├── providers/storage/     # cloudinary | s3 | local (mismo contrato: upload/remove/getSignedUrl)
     ├── queue/                 # Generación de contratos (inline hoy, SQS mañana)
+    ├── jobs/                  # Tareas periódicas en proceso (alertas de búsqueda)
     ├── utils/                 # AppError, schemas Zod comunes, mailer, escape
     └── modules/
         ├── auth/              # registro, login, refresh, logout, perfil, contraseñas
@@ -78,7 +83,8 @@ Las respuestas exitosas siempre tienen la forma `{ "data": ..., "meta"?: ... }`.
         ├── dashboard/         # métricas del publicador
         ├── admin/             # verificación de organizaciones, usuarios, citas
         ├── newsletter/        # suscripción pública al boletín
-        └── support/           # formulario "Escríbenos"
+        ├── support/           # formulario "Escríbenos"
+        └── alerts/            # alertas de búsqueda + job que envía los correos
 ```
 
 Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, `*.service.js` y, si expone datos, `*.dto.js`. Un módulo nuevo se registra en `src/routes/index.js` y sus modelos en `src/models/index.js`.
@@ -87,7 +93,7 @@ Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, 
 
 | Tabla | Para qué | Relaciones |
 | --- | --- | --- |
-| `Users` | Cuentas (`adopter`, `shelter`, `breeder`, `individual`, `admin`). Soft delete. | 1→N Pets, Appointments, Favorites, RefreshTokens |
+| `Users` | Cuentas (`adopter`, `shelter`, `breeder`, `individual`, `admin`). Soft delete y suspensión (`suspendedAt`). | 1→N Pets, Appointments, Favorites, RefreshTokens |
 | `Pets` | Publicaciones. `imageUrl` = portada. Soft delete. | N→1 User (owner), 1→N PetImages |
 | `PetImages` | Galería (1-3) + foto de madre + foto de padre. | N→1 Pet |
 | `VetClinics` | Clínicas donde se hace la entrega. | 1→N Appointments |
@@ -98,10 +104,11 @@ Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, 
 | `PasswordResetTokens` | Enlaces de recuperación (hash, 1 h, un solo uso). | N→1 User |
 | `NewsletterSubscribers` | Correos del boletín. | — |
 | `SupportMessages` | Mensajes de "Escríbenos". | N→1 User (opcional) |
+| `SearchAlerts` | Filtros guardados (raza, ciudad, precio, tipo) para avisar por correo. | N→1 User |
 
 ---
 
-## 3. DESARROLLO LOCAL
+## 3. DESARROLLO LOCAL Y PRUEBAS
 
 Requisitos: Docker Desktop (con WSL2 en Windows) y Git. Node 22 solo si quieres correr scripts fuera del contenedor.
 
@@ -119,6 +126,40 @@ docker compose exec app sh -c "npm run migrate && npm run seed"
 - Sin Cloudinary puedes usar `STORAGE_DRIVER=local`: las imágenes se sirven desde `/uploads`. Es solo para desarrollo.
 - Sin SMTP no salen correos. En `NODE_ENV=development` el enlace de recuperación de contraseña se imprime en el log.
 
+### 3.1. Pruebas automatizadas
+
+La suite levanta un PostgreSQL desechable (en memoria), aplica las migraciones reales y prueba la API de punta a punta con Jest + Supertest: **62 pruebas** en 9 archivos.
+
+```bash
+docker compose -f docker-compose.test.yml run --rm --build tests
+docker compose -f docker-compose.test.yml down
+```
+
+Corre esto **antes de cada push**. Si alguna prueba falla, no despliegues.
+
+| Archivo | Qué cubre |
+| --- | --- |
+| `system.test.js` | Health checks, formato de errores, JSON malformado y payload gigante, cabeceras de seguridad, CORS, validación del env de producción |
+| `auth.test.js` | Registro, login, cookie segura, rotación y robo de refresh token, logout, perfil, cambio de contraseña, recuperación por correo |
+| `pets.test.js` | Galería + madre + padre, validaciones de imágenes, conversión a WebP, roles, edición/reemplazo, borrado de archivos |
+| `appointments.test.js` | Citas, doble reserva, máquina de estados, permisos, **generación real del contrato PDF** con Chromium y descarga |
+| `admin.test.js` | Acceso solo admin, usuarios (filtros y búsqueda), verificación de organizaciones, citas, **suspensión y reactivación completas** |
+| `alerts.test.js` | CRUD de alertas, coincidencias del job, cooldown, acumulación y exclusión de cuentas suspendidas |
+| `public-forms.test.js` | Newsletter (idempotencia, correos de confirmación), "Escríbenos" (Reply-To, acuse, escape de HTML) |
+| `catalog-favorites-dashboard.test.js` | Filtros solo con mascotas disponibles, clínicas, favoritos, dashboard por rol |
+| `ops.test.js` | `create-admin`, seed bloqueado en producción, script de alertas, rate limits |
+
+Cómo están armadas:
+- **Los correos no se envían**: se capturan con un *spy* sobre `mailer.send` y se revisan su destinatario, asunto y contenido.
+- **Las imágenes se escriben en un `tmpfs`** del contenedor, así no ensucian tu carpeta `public/uploads`.
+- **Por seguridad, la suite vacía la BD**: exige `TEST_DATABASE_URL` y que el nombre de la base contenga `test`. Nunca la apuntes a la base real.
+
+Si prefieres correrlas fuera de Docker, necesitas Node 22 y un Postgres de pruebas propio. La prueba del PDF se omite si no hay Chromium instalado:
+
+```bash
+TEST_DATABASE_URL=postgresql://usuario:clave@localhost:5432/patitas_test npm test
+```
+
 ---
 
 ## 4. BASE DE DATOS: MIGRACIONES, SEED Y ADMIN
@@ -127,11 +168,14 @@ No se usa `sync()`: el esquema vive en `migrations/`. **Nunca edites una migraci
 
 | Comando | Qué hace |
 | --- | --- |
+| `npm test` | Corre la suite de pruebas (requiere `TEST_DATABASE_URL`; ver 3.1). |
 | `npm run migrate` | Aplica las migraciones pendientes. En producción corre solo al arrancar el contenedor. |
 | `npm run migrate:status` | Muestra qué migraciones están aplicadas. |
 | `npm run migrate:undo` | Revierte la última migración. |
 | `npm run seed` | Datos de demo. **Bloqueado cuando `NODE_ENV=production`.** |
 | `npm run create-admin` | Crea (o promueve) el admin real con las variables `ADMIN_*`. |
+| `npm run smtp:test -- correo@destino.com` | Verifica el SMTP y envía un correo de prueba. |
+| `npm run alerts:send` | Corre una vez el job de alertas de búsqueda (el servidor ya lo corre solo). |
 
 Usuarios del seed de demo (solo en local):
 
@@ -151,7 +195,7 @@ ADMIN_EMAIL=tu@correo.com ADMIN_PASSWORD='Una-Clave-Larga-2026' ADMIN_NAME='Tu N
 
 ## 5. ENDPOINTS DE LA API
 
-Base URL: `http://localhost:3000/api/v1` (local) · `https://api.tudominio.com/api/v1` (producción)
+Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.com/api/v1` (producción)
 
 Éxito: `{ "data": ..., "meta"?: ... }`. Error: `{ "error": { code, message, details }, "requestId" }`. Endpoints autenticados: header `Authorization: Bearer <accessToken>`.
 
@@ -205,8 +249,18 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.tudominio.com/a
 | GET | `/admin/organizations?status=pending` | Lista refugios/criadores por estado de verificación. |
 | PATCH | `/admin/organizations/:id/verify` | Verifica una organización (envía correo si SMTP está configurado). |
 | PATCH | `/admin/organizations/:id/revoke` | Revoca la verificación. |
-| GET | `/admin/users?role=&search=&page=&limit=` | Usuarios paginados; `search` busca en nombre y correo. |
+| GET | `/admin/users?role=&search=&status=&page=&limit=` | Usuarios paginados; `search` busca en nombre y correo; `status` = `active`/`suspended`/`all`. |
+| PATCH | `/admin/users/:id/suspend` | Suspende la cuenta. Body opcional `{ reason }`. Ver el detalle debajo de esta tabla. |
+| PATCH | `/admin/users/:id/reactivate` | Reactiva la cuenta: vuelve a entrar y sus publicaciones reaparecen. |
 | GET | `/admin/appointments?status=&page=&limit=` | Todas las citas del sistema con `pet` (+`owner`), `clinic` y `adopter`. |
+
+**Qué pasa al suspender una cuenta** (no aplica a administradores):
+- No puede iniciar sesión (`403` con `code: "ACCOUNT_SUSPENDED"`). Si la contraseña es incorrecta responde el genérico "Credenciales inválidas", para no revelar a terceros qué cuentas están suspendidas.
+- Se revocan todas sus sesiones, y los access tokens que ya tenía dejan de servir **de inmediato**: el middleware de auth consulta el estado del usuario en cada petición.
+- Sus publicaciones desaparecen del listado, del detalle, de favoritos, de los filtros y de las alertas, y nadie puede agendar citas sobre ellas.
+- Se cancelan sus citas activas, como vendedor o como comprador, para no dejar a nadie esperando.
+- Recibe un correo con el motivo, si se indicó.
+- Al reactivar vuelve todo a la normalidad, salvo las citas canceladas, que no se restauran.
 
 ### 5.7. Dashboard (`/dashboard`)
 | Método | Endpoint | Descripción |
@@ -216,7 +270,7 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.tudominio.com/a
 ### 5.8. Catálogos (`/catalogs`)
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| GET | `/catalogs/filters` | Razas y ciudades en uso. |
+| GET | `/catalogs/filters` | Razas y ciudades que tienen al menos una mascota **disponible** (de cuentas no suspendidas). |
 | GET | `/catalogs/clinics?city=` | Clínicas activas. |
 
 ### 5.9. Contratos (`/contracts`)
@@ -227,13 +281,29 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.tudominio.com/a
 ### 5.10. Newsletter (`/newsletter`) — público
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| POST | `/newsletter/subscribe` | `{ email }`. Idempotente (un correo repetido responde 200). Rate limit: 5/h por IP. |
+| POST | `/newsletter/subscribe` | `{ email }`. Idempotente (un correo repetido responde 200). Envía un correo de confirmación solo en altas nuevas o reactivaciones. Rate limit: 5/h por IP. |
 | POST | `/newsletter/unsubscribe` | `{ email }`. Da de baja; no revela si el correo existía. |
 
 ### 5.11. Soporte (`/support`) — público, sesión opcional
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| POST | `/support/contact` | `{ name?, email?, message }`. Con sesión, `name`/`email` salen del usuario si no se envían. Guarda en `SupportMessages` y reenvía a `SUPPORT_EMAIL`. Rate limit: 5/h por IP. |
+| POST | `/support/contact` | `{ name?, email?, message }`. Con sesión, `name`/`email` salen del usuario si no se envían. Guarda en `SupportMessages`, reenvía a `SUPPORT_EMAIL` (con *Reply-To* al remitente) y envía un acuse de recibo al remitente. Rate limit: 5/h por IP. |
+
+### 5.12. Alertas de búsqueda (`/alerts`) — requiere sesión
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| POST | `/alerts` | Crea una alerta con al menos un filtro: `breed`, `city`, `minPrice`, `maxPrice`, `adoptionType` (`adoption`/`sale`). Máximo 10 por usuario. Rate limit: 20/h por IP. |
+| GET | `/alerts` | Alertas del usuario autenticado. |
+| DELETE | `/alerts/:id` | Cancela una alerta propia. |
+
+**Cómo y cuándo se avisa:**
+- **Canal:** correo electrónico.
+- **Frecuencia:** el servidor revisa las alertas cada `SEARCH_ALERTS_INTERVAL_MINUTES` (default 60). Cada alerta recibe **como máximo un correo cada `SEARCH_ALERTS_COOLDOWN_HOURS`** (default 24) y solo si hay mascotas nuevas que coinciden. Ese correo es un resumen con hasta 10 mascotas y un enlace a `/buscar` con los filtros.
+- **Coincidencia:** solo mascotas disponibles publicadas **después** de crear la alerta. Raza y ciudad por coincidencia parcial sin importar mayúsculas (`beagle` encuentra "Beagle mini"); el precio entre mínimo y máximo. Nunca avisa de las publicaciones del propio usuario ni de cuentas suspendidas.
+- Mientras una alerta está en espera, las mascotas nuevas se acumulan para el próximo resumen. Si el envío falla, se reintenta en la siguiente corrida.
+- **Sin SMTP el job no corre**, para no "consumir" avisos que nunca llegarían.
+- Si un día hay varias réplicas de la API, un *advisory lock* de Postgres garantiza que solo una envíe.
+
 
 ---
 
@@ -275,6 +345,7 @@ Lo que ya trae el backend:
 **Autenticación y sesiones**
 - Contraseñas con bcrypt (factor 12), mínimo 8 caracteres con mayúscula y número (12 para el admin). El login compara contra un hash falso cuando el usuario no existe, para no revelar qué correos están registrados por diferencias de tiempo.
 - Access token JWT de 15 min (HS256, `issuer` fijo). El `JWT_SECRET` debe tener ≥ 32 caracteres; en producción se rechazan valores que parezcan de ejemplo.
+- Cada petición autenticada confirma en la BD que el usuario sigue existiendo y no está suspendido, y toma su rol de ahí. Una suspensión o un cambio de rol se aplica al instante, sin esperar a que venza el token.
 - El refresh token viaja en una cookie `httpOnly` + `Secure` + `SameSite`, limitada al path `/api/v1/auth`. En la BD se guarda solo su SHA-256. Rota en cada uso, y si alguien reutiliza uno viejo (señal de robo) se revocan todas las sesiones del usuario.
 - Cambiar la contraseña cierra las demás sesiones. Recuperarla por correo cierra todas.
 - Cambiar el correo del perfil exige la contraseña actual.
@@ -315,7 +386,7 @@ Lo que ya trae el backend:
 - El seed de demo, con contraseñas públicas, está bloqueado en producción. El admin real se crea con `create-admin`.
 - Los logs redactan `Authorization`, cookies, contraseñas y tokens.
 
-**Pendiente o recomendado** (ver [roadmap](#12-roadmap)): verificación de correo al registrarse, suspensión de cuentas desde admin, 2FA para admins y escaneo de dependencias en CI (`npm audit`). La única alerta abierta de `npm audit` es `uuid` (moderada), que viene dentro de Sequelize. Este proyecto no usa la función afectada (`v3/v5/v6` con buffer) y se resuelve cuando Sequelize actualice.
+**Pendiente o recomendado** (ver [roadmap](#12-roadmap)): verificación de correo al registrarse, bloqueo por cuenta tras varios intentos fallidos, 2FA para admins y correr las pruebas y `npm audit` en CI (GitHub Actions) en cada push. La única alerta abierta de `npm audit` es `uuid` (moderada), que viene dentro de Sequelize. Este proyecto no usa la función afectada (`v3/v5/v6` con buffer) y se resuelve cuando Sequelize actualice.
 
 ---
 
@@ -341,7 +412,7 @@ Internet ──HTTPS──▶ Traefik (Dokploy, certificados Let's Encrypt)
 
 1. **VPS** con Ubuntu 22.04/24.04. Mínimo 2 GB de RAM (Chromium para los PDF consume); lo recomendado son 4 GB.
 2. **Instalar Dokploy** siguiendo la guía oficial (`https://docs.dokploy.com`).
-3. **DNS:** crea un registro `A` apuntando a la IP del servidor para la API (ej. `api.tudominio.com`). Si el panel de Dokploy tendrá dominio propio, crea otro (ej. `panel.tudominio.com`).
+3. **DNS:** crea un registro `A` apuntando a la IP del servidor para la API (ej. `api.puppymarketcol.com`). Si el panel de Dokploy tendrá dominio propio, crea otro (ej. `panel.puppymarketcol.com`).
 4. **Firewall:** deja abiertos solo `22` (SSH), `80` y `443`. Cuando el panel tenga dominio con HTTPS, cierra el `3000` (el puerto del panel).
    ```bash
    ufw allow 22 && ufw allow 80 && ufw allow 443 && ufw enable
@@ -397,8 +468,8 @@ DB_SSL=false
 JWT_SECRET=pega_aqui_la_salida_de_openssl_rand_hex_48
 JWT_EXPIRES_IN=15m
 
-CORS_ORIGINS=https://app.tudominio.com
-FRONTEND_URL=https://app.tudominio.com
+CORS_ORIGINS=https://puppymarketcol.com,https://www.puppymarketcol.com
+FRONTEND_URL=https://puppymarketcol.com
 TRUST_PROXY=1
 COOKIE_SAMESITE=strict
 
@@ -409,8 +480,12 @@ SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASS=
-MAIL_FROM=no-reply@tudominio.com
-SUPPORT_EMAIL=soporte@tudominio.com
+MAIL_FROM=no-reply@puppymarketcol.com
+APP_NAME=PuppyMarket
+SUPPORT_EMAIL=soporte@puppymarketcol.com
+
+SEARCH_ALERTS_INTERVAL_MINUTES=60
+SEARCH_ALERTS_COOLDOWN_HOURS=24
 
 RUN_MIGRATIONS=true
 ```
@@ -420,16 +495,18 @@ RUN_MIGRATIONS=true
 | `DATABASE_URL` | La **Internal Connection URL** del paso 8.4. | La conexión va por la red interna de Docker. |
 | `DB_SSL` | `false` | La conexión es interna al servidor. Pon `true` solo si usas una BD gestionada externa (RDS, Neon…). |
 | `JWT_SECRET` | Salida de `openssl rand -hex 48`. | Si cambia, todas las sesiones se invalidan. |
-| `CORS_ORIGINS` | URL(s) `https://` del frontend, separadas por coma. | En producción la app no levanta con `http://` ni `*`. |
-| `FRONTEND_URL` | URL `https://` del frontend. | Base del enlace de "restablecer contraseña". |
+| `CORS_ORIGINS` | `https://puppymarketcol.com,https://www.puppymarketcol.com` (agrega cualquier otro dominio del front). | En producción la app no levanta con `http://` ni `*`. |
+| `FRONTEND_URL` | `https://puppymarketcol.com` (sin `/` al final). | Base de los enlaces de los correos: `/reset-password?token=…` y `/buscar` de las alertas. |
 | `TRUST_PROXY` | `1`. Pon `2` si Cloudflare (nube naranja) está delante. | Para que el rate limit vea la IP real. |
 | `COOKIE_SAMESITE` | Ver la nota de abajo. | Si queda mal, el refresh de sesión no funciona. |
 | `CLOUDINARY_URL` | Cloudinary → Dashboard → "API Environment variable". | Obligatoria con `STORAGE_DRIVER=cloudinary`. |
-| `SMTP_*` | Gmail (contraseña de aplicación), Brevo, Resend, SES… | Sin esto no salen correos (recuperación, verificación, soporte). |
+| `SMTP_*` | Ver [8.12](#812-correo-smtp). | Sin esto no salen correos: recuperación de contraseña, newsletter, contacto, alertas, suspensiones. |
+| `MAIL_FROM` / `APP_NAME` | `no-reply@puppymarketcol.com` / `PuppyMarket`. | Remitente y nombre que firma los correos. `MAIL_FROM` debe ser un correo del dominio verificado en el proveedor SMTP. |
+| `SEARCH_ALERTS_*` | `60` / `24`. | Cada cuántos minutos revisa alertas el servidor (0 = apagado) y horas mínimas entre correos por alerta. |
 | `SUPPORT_EMAIL` | Buzón que recibe "Escríbenos". | Vacío = los mensajes solo se guardan en la BD. |
 
 > **Front y API en el mismo dominio o en distintos:**
-> - Si el front está en `app.tudominio.com` y la API en `api.tudominio.com`, son el mismo sitio → `COOKIE_SAMESITE=strict` (lo más seguro).
+> - Front en `puppymarketcol.com` y API en `api.puppymarketcol.com` → son el mismo sitio → `COOKIE_SAMESITE=strict` (lo más seguro). **Esta es la configuración recomendada.**
 > - Si el front está en otro dominio (ej. `patitas.vercel.app`) → `COOKIE_SAMESITE=none`. Si no, el navegador no enviará la cookie del refresh token.
 > - En ambos casos el frontend debe llamar a `/auth/refresh` con `credentials: 'include'`.
 
@@ -438,7 +515,7 @@ Después de guardar, **nunca subas estos valores al repositorio**: `.env` está 
 ### 8.7. Dominio y HTTPS
 
 Pestaña **Domains** → **Add Domain**:
-- **Host:** `api.tudominio.com`
+- **Host:** `api.puppymarketcol.com`
 - **Path:** `/`
 - **Container Port:** `3000`
 - **HTTPS:** activado
@@ -455,8 +532,8 @@ Traefik emite y renueva el certificado solo. El DNS del paso 8.2 ya debe apuntar
    3. arranca la API (`🚀 API en puerto 3000`).
 3. Verifica:
    ```bash
-   curl https://api.tudominio.com/health
-   curl https://api.tudominio.com/ready
+   curl https://api.puppymarketcol.com/health
+   curl https://api.puppymarketcol.com/ready
    ```
    La primera debe responder `{"status":"ok"}` y la segunda `{"status":"ready"}` (la BD responde).
 
@@ -477,6 +554,43 @@ En la pestaña **General** de `patitas-api` activa **Autodeploy**. Desde entonce
 ### 8.11. Recursos (recomendado)
 
 En **Advanced → Resources** limita la API, por ejemplo a 1 GB de memoria. Así un pico de Chromium no tumba el servidor ni la base de datos.
+
+### 8.12. Correo (SMTP)
+
+Sin SMTP la API funciona, pero **no sale ningún correo**. Correos que envía el backend:
+
+| Correo | Destinatario | Cuándo |
+| --- | --- | --- |
+| Recuperar contraseña | el usuario | `POST /auth/forgot-password` |
+| Confirmación del newsletter | el suscriptor | alta nueva o reactivación (no en reenvíos) |
+| Mensaje de "Escríbenos" | `SUPPORT_EMAIL` (con *Reply-To* al remitente) | `POST /support/contact` |
+| Acuse de recibo del contacto | el remitente | `POST /support/contact` |
+| Alerta de búsqueda | el comprador | job periódico (ver 5.12) |
+| Organización verificada | la organización | `PATCH /admin/organizations/:id/verify` |
+| Cuenta suspendida / reactivada | el usuario | `PATCH /admin/users/:id/suspend` y `/reactivate` |
+
+**1. Elige un proveedor.** Lo recomendado es uno transaccional con el dominio verificado; sin eso, los correos caen en spam.
+
+| Proveedor | Gratis | `SMTP_HOST` | `SMTP_PORT` |
+| --- | --- | --- | --- |
+| Brevo | 300/día | `smtp-relay.brevo.com` | `587` |
+| Resend | 3.000/mes | `smtp.resend.com` | `465` |
+| Amazon SES | muy barato | `email-smtp.<región>.amazonaws.com` | `587` |
+| Gmail | — | `smtp.gmail.com` (con contraseña de aplicación) | `587` |
+
+Gmail sirve solo para pruebas: tiene límites bajos y el remitente no es de tu dominio.
+
+**2. Verifica el dominio** `puppymarketcol.com` en el proveedor, agregando en el DNS los registros **SPF**, **DKIM** y **DMARC** que te indique. Sin esto, Gmail y Outlook marcan los correos como spam.
+
+**3. Configura las variables** `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` y `MAIL_FROM` en Dokploy y redespliega. Con el puerto 465 la conexión usa TLS directo; con 587, STARTTLS.
+
+**4. Prueba** desde la terminal del contenedor:
+```bash
+node scripts/test-smtp.js tu-correo@gmail.com
+```
+Después prueba los tres flujos del frontend: "¿Olvidaste tu contraseña?", el newsletter y "Escríbenos". Si algo falla, el log de la API lo registra como `warn`. Los fallos de correo nunca rompen la respuesta al usuario.
+
+> En desarrollo puedes ver los correos sin enviarlos de verdad con Mailpit: `docker run -p 1025:1025 -p 8025:8025 axllent/mailpit`, con `SMTP_HOST=host.docker.internal` y `SMTP_PORT=1025`. La bandeja queda en `http://localhost:8025`.
 
 ---
 
@@ -589,11 +703,16 @@ Es solo configuración; no hay que tocar código:
 ✅ Panel admin: usuarios y citas
 ✅ Dashboard para particulares (`individual`)
 ✅ Despliegue en Dokploy con migraciones automáticas, backups programados y endurecimiento de seguridad
+✅ Suspender y reactivar usuarios desde admin
+✅ Alertas de búsqueda por correo
+✅ Correos de confirmación de newsletter y acuse del formulario de contacto
+✅ Filtros del buscador solo con razas y ciudades que tienen mascotas disponibles
+✅ Suite de pruebas automatizadas (62 pruebas de punta a punta contra Postgres real)
 
 ⏳ **Pendiente**
-1. **Suspender usuarios desde admin** (`PATCH /admin/users/:id/suspend`): requiere una columna `suspendedAt` en `Users` y validarla en login/refresh.
+1. **Bloqueo por cuenta** tras varios intentos de login fallidos (hoy el límite es por IP).
 2. **Verificación de correo al registrarse** y **2FA para cuentas admin**.
-3. **Tests automatizados** (Jest + Supertest ya están en devDependencies) y CI con `npm audit`.
+3. **CI en GitHub Actions** que corra `docker-compose.test.yml` y `npm audit` en cada push y bloquee el merge si fallan.
 4. **OpenAPI/Swagger** generado desde los schemas Zod (`@asteasolutions/zod-to-openapi`).
 5. **Worker aparte para Puppeteer** cuando el tráfico lo justifique (la interfaz `contract-queue.js` ya está lista).
 6. **Limpieza periódica** de `PasswordResetTokens` y `RefreshTokens` vencidos.

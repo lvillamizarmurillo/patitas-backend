@@ -10,6 +10,7 @@ router.patch('/organizations/:id/verify', validate(s.verify), ctrl.verify);
 router.patch('/organizations/:id/revoke', validate(s.verify), ctrl.revoke);
 router.get('/users', validate(s.listUsers), ctrl.listUsers);
 router.get('/appointments', validate(s.listAppointments), ctrl.listAppointments);
-// TODO: PATCH /users/:id/suspend — requiere una columna (ej. suspendedAt) en Users y revisarla en login/refresh
+router.patch('/users/:id/suspend', validate(s.suspend), ctrl.suspend);
+router.patch('/users/:id/reactivate', validate(s.reactivate), ctrl.reactivate);
 
 module.exports = router;

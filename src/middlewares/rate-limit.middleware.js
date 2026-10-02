@@ -19,4 +19,6 @@ exports.appointmentLimiter = make(60, 30);
 exports.forgotPasswordLimiter = make(60, 3);
 exports.resetPasswordLimiter = make(60, 10);
 exports.newsletterLimiter = make(60, 5);
+exports.newsletterUnsubscribeLimiter = make(60, 5);
 exports.supportLimiter = make(60, 5);
+exports.alertLimiter = make(60, 20);

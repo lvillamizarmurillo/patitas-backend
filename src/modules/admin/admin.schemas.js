@@ -8,9 +8,16 @@ exports.listUsers = {
   query: z.object({
     role: z.enum(['adopter', 'shelter', 'breeder', 'individual', 'admin']).optional(),
     search: z.string().trim().min(1).max(120).optional(),
+    status: z.enum(['active', 'suspended', 'all']).default('all'),
     ...pagination,
   }),
 };
+
+exports.suspend = {
+  params: idParam.params,
+  body: z.object({ reason: z.string().trim().min(3).max(500).optional() }).default({}),
+};
+exports.reactivate = { params: idParam.params };
 
 exports.listAppointments = {
   query: z.object({

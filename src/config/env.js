@@ -36,10 +36,15 @@ const schema = z.object({
   SMTP_PORT: z.coerce.number().default(587),
   SMTP_USER: z.string().optional(),
   SMTP_PASS: z.string().optional(),
-  MAIL_FROM: z.string().default('no-reply@patitas.app'),
+  MAIL_FROM: z.string().email().default('no-reply@patitas.app'),
+  APP_NAME: z.string().trim().min(1).max(60).default('PuppyMarket'), // nombre que firma los correos
   SUPPORT_EMAIL: z.string().email().optional(), // destino de "Escríbenos"; vacío = solo se guarda en BD
 
   CONTRACT_QUEUE_URL: z.string().optional(), // vacío hoy: el PDF se genera inline
+
+  // Alertas de búsqueda: cada cuánto revisa el job (0 = apagado) y mínimo de horas entre correos por alerta
+  SEARCH_ALERTS_INTERVAL_MINUTES: z.coerce.number().int().min(0).max(1440).default(60),
+  SEARCH_ALERTS_COOLDOWN_HOURS: z.coerce.number().int().min(1).max(168).default(24),
 }).superRefine((d, ctx) => {
   const fail = (path, message) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
 

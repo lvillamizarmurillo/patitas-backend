@@ -9,9 +9,14 @@ const transporter = env.SMTP_HOST
     })
   : null;
 
-// Si no hay SMTP configurado (caso hoy, sin costo), simplemente no envía nada.
+exports.isConfigured = () => Boolean(transporter);
+
+// Comprueba conexión y credenciales contra el servidor SMTP (lo usa scripts/test-smtp.js)
+exports.verify = () => (transporter ? transporter.verify() : Promise.reject(new Error('SMTP_HOST no está configurado')));
+
+// Si no hay SMTP configurado, simplemente no envía nada.
 // No rompe el flujo: nunca lances este error hacia el usuario.
-exports.send = async ({ to, subject, html }) => {
+exports.send = async ({ to, subject, html, replyTo }) => {
   if (!transporter) return;
-  await transporter.sendMail({ from: env.MAIL_FROM, to, subject, html });
+  await transporter.sendMail({ from: `"${env.APP_NAME}" <${env.MAIL_FROM}>`, to, subject, html, replyTo });
 };

@@ -1,0 +1,33 @@
+# Suite de pruebas con un Postgres desechable (en memoria, se borra al terminar).
+#   docker compose -f docker-compose.test.yml run --rm --build tests
+#   docker compose -f docker-compose.test.yml down
+services:
+  db-test:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: test
+      POSTGRES_PASSWORD: test
+      POSTGRES_DB: patitas_test
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U test -d patitas_test"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+  tests:
+    build:
+      context: .
+      target: development
+    environment:
+      TEST_DATABASE_URL: postgresql://test:test@db-test:5432/patitas_test
+    volumes:
+      - .:/usr/app
+      - /usr/app/node_modules
+    tmpfs:
+      - /usr/app/public/uploads # las imágenes de prueba no ensucian tu carpeta local
+    depends_on:
+      db-test:
+        condition: service_healthy
+    command: npm test

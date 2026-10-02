@@ -43,6 +43,8 @@ exports.login = async ({ email, password }, userAgent) => {
   const user = await User.scope('withPassword').findOne({ where: { email } });
   const ok = await bcrypt.compare(password, user ? user.password : DUMMY_HASH);
   if (!user || !ok) throw AppError.unauthorized('Credenciales inválidas');
+  // Se revisa después de la contraseña para no revelar a terceros qué cuentas están suspendidas
+  if (user.suspendedAt) throw AppError.suspended();
   return { user: toUserDTO(user), accessToken: signAccessToken(user), refreshToken: await issueRefreshToken(user.id, userAgent) };
 };
 
@@ -59,6 +61,7 @@ exports.refresh = async (rawToken, userAgent) => {
 
   const user = await User.findByPk(stored.userId);
   if (!user) throw AppError.unauthorized('Sesión inválida');
+  if (user.suspendedAt) throw AppError.suspended();
 
   const newRaw = crypto.randomBytes(48).toString('hex');
   await RefreshToken.create({
@@ -124,7 +127,7 @@ exports.changePassword = async (userId, { currentPassword, newPassword }, curren
 // Nunca revela si el correo existe: el controller responde lo mismo en ambos casos
 exports.forgotPassword = async ({ email }) => {
   const user = await User.findOne({ where: { email } });
-  if (!user) return;
+  if (!user || user.suspendedAt) return;
 
   const raw = crypto.randomBytes(32).toString('hex');
   await sequelize.transaction(async (t) => {
@@ -140,7 +143,7 @@ exports.forgotPassword = async ({ email }) => {
   if (env.NODE_ENV === 'development') logger.info({ link }, 'Enlace de recuperación (solo visible en desarrollo)');
   mailer.send({
     to: user.email,
-    subject: 'Recupera tu contraseña de Patitas',
+    subject: `Recupera tu contraseña de ${env.APP_NAME}`,
     html: `<p>Hola ${escapeHtml(user.fullName)},</p>
       <p>Recibimos una solicitud para restablecer tu contraseña. Este enlace vence en ${RESET_TOKEN_MINUTES} minutos:</p>
       <p><a href="${link}">Restablecer contraseña</a></p>

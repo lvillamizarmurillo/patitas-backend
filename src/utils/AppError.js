@@ -8,6 +8,9 @@ class AppError extends Error {
   static forbidden(m = 'Acceso denegado') { return new AppError(m, 403, 'FORBIDDEN'); }
   static notFound(m = 'Recurso no encontrado') { return new AppError(m, 404, 'NOT_FOUND'); }
   static conflict(m) { return new AppError(m, 409, 'CONFLICT'); }
+  static suspended() {
+    return new AppError('Tu cuenta está suspendida. Escríbenos si crees que es un error.', 403, 'ACCOUNT_SUSPENDED');
+  }
   static tooMany(m = 'Demasiadas solicitudes') { return new AppError(m, 429, 'RATE_LIMITED'); }
 }
 module.exports = AppError;
