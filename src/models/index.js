@@ -11,6 +11,7 @@ const PasswordResetToken = require('./PasswordResetToken');
 const NewsletterSubscriber = require('./NewsletterSubscriber');
 const SupportMessage = require('./SupportMessage');
 const SearchAlert = require('./SearchAlert');
+const Notification = require('./Notification');
 
 User.hasMany(Pet, { foreignKey: 'ownerId', as: 'pets' });
 Pet.belongsTo(User, { foreignKey: 'ownerId', as: 'owner' });
@@ -47,7 +48,10 @@ SupportMessage.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 User.hasMany(SearchAlert, { foreignKey: 'userId', as: 'searchAlerts' });
 SearchAlert.belongsTo(User, { foreignKey: 'userId', as: 'user' });
 
+User.hasMany(Notification, { foreignKey: 'userId', as: 'notifications' });
+Notification.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+
 module.exports = {
   sequelize, User, Pet, PetImage, VetClinic, Appointment, Contract, Favorite,
-  RefreshToken, PasswordResetToken, NewsletterSubscriber, SupportMessage, SearchAlert,
+  RefreshToken, PasswordResetToken, NewsletterSubscriber, SupportMessage, SearchAlert, Notification,
 };

@@ -71,7 +71,7 @@ Las respuestas exitosas siempre tienen la forma `{ "data": ..., "meta"?: ... }`.
     ├── middlewares/           # auth, validate, upload, rate-limit, error, not-found
     ├── providers/storage/     # cloudinary | s3 | local (mismo contrato: upload/remove/getSignedUrl)
     ├── queue/                 # Generación de contratos (inline hoy, SQS mañana)
-    ├── jobs/                  # Tareas periódicas en proceso (alertas de búsqueda)
+    ├── jobs/                  # Tareas periódicas en proceso (citas y alertas de búsqueda)
     ├── utils/                 # AppError, schemas Zod comunes, mailer, escape
     └── modules/
         ├── auth/              # registro, login, refresh, logout, perfil, contraseñas
@@ -84,7 +84,8 @@ Las respuestas exitosas siempre tienen la forma `{ "data": ..., "meta"?: ... }`.
         ├── admin/             # verificación de organizaciones, usuarios, citas
         ├── newsletter/        # suscripción pública al boletín
         ├── support/           # formulario "Escríbenos"
-        └── alerts/            # alertas de búsqueda + job que envía los correos
+        ├── alerts/            # alertas de búsqueda + job que envía los correos
+        └── notifications/     # notificaciones in-app: eventos, textos, endpoints y correos
 ```
 
 Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, `*.service.js` y, si expone datos, `*.dto.js`. Un módulo nuevo se registra en `src/routes/index.js` y sus modelos en `src/models/index.js`.
@@ -97,7 +98,7 @@ Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, 
 | `Pets` | Publicaciones. `imageUrl` = portada. Soft delete. | N→1 User (owner), 1→N PetImages |
 | `PetImages` | Galería (1-3) + foto de madre + foto de padre. | N→1 Pet |
 | `VetClinics` | Clínicas donde se hace la entrega. | 1→N Appointments |
-| `Appointments` | Citas. Índice único parcial: una sola cita activa por mascota. | N→1 Pet, User, VetClinic |
+| `Appointments` | Citas. Índice único parcial: una sola cita activa por mascota. Guarda quién canceló (`cancelledBy`) y por qué (`cancellationReason`). | N→1 Pet, User, VetClinic |
 | `Contracts` | PDF del contrato (clave en storage + SHA-256). | 1→1 Appointment |
 | `Favorites` | Favoritos (único por usuario+mascota). | N→1 User, Pet |
 | `RefreshTokens` | Sesiones (hash SHA-256, rotación, revocación). | N→1 User |
@@ -105,6 +106,7 @@ Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, 
 | `NewsletterSubscribers` | Correos del boletín. | — |
 | `SupportMessages` | Mensajes de "Escríbenos". | N→1 User (opcional) |
 | `SearchAlerts` | Filtros guardados (raza, ciudad, precio, tipo) para avisar por correo. | N→1 User |
+| `Notifications` | Notificaciones in-app: `type`, `data` (JSON con `appointmentId`, `petId`…), `readAt`, `createdAt`. | N→1 User |
 
 ---
 
@@ -128,7 +130,7 @@ docker compose exec app sh -c "npm run migrate && npm run seed"
 
 ### 3.1. Pruebas automatizadas
 
-La suite levanta un PostgreSQL desechable (en memoria), aplica las migraciones reales y prueba la API de punta a punta con Jest + Supertest: **62 pruebas** en 9 archivos.
+La suite levanta un PostgreSQL desechable (en memoria), aplica las migraciones reales y prueba la API de punta a punta con Jest + Supertest: **76 pruebas** en 10 archivos.
 
 ```bash
 docker compose -f docker-compose.test.yml run --rm --build tests
@@ -147,6 +149,7 @@ Corre esto **antes de cada push**. Si alguna prueba falla, no despliegues.
 | `alerts.test.js` | CRUD de alertas, coincidencias del job, cooldown, acumulación y exclusión de cuentas suspendidas |
 | `public-forms.test.js` | Newsletter (idempotencia, correos de confirmación), "Escríbenos" (Reply-To, acuse, escape de HTML) |
 | `catalog-favorites-dashboard.test.js` | Filtros solo con mascotas disponibles, clínicas, favoritos, dashboard por rol |
+| `notifications.test.js` | Endpoints (`unread`, paginación, marcar una y todas), cada evento que notifica, correos de las importantes, recordatorios, citas vencidas y sin cerrar |
 | `ops.test.js` | `create-admin`, seed bloqueado en producción, script de alertas, rate limits |
 
 Cómo están armadas:
@@ -232,7 +235,7 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
 | POST | `/appointments` | Solicita cita. `meetingDate` debe ser >1h en el futuro. |
-| GET | `/appointments` | Citas del usuario (como adoptante o como dueño de la mascota). |
+| GET | `/appointments` | Citas donde el usuario participa como comprador **o** como dueño de la mascota, sea cual sea su rol (un refugio o particular que compra también ve sus citas). Incluye `cancelledBy` y `cancellationReason`. |
 | GET | `/appointments/:id` | Detalle (usado por la pantalla de seguimiento). |
 | PATCH | `/appointments/:id/status` | Cambia estado, regido por la máquina de estados. |
 
@@ -304,6 +307,44 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.
 - **Sin SMTP el job no corre**, para no "consumir" avisos que nunca llegarían.
 - Si un día hay varias réplicas de la API, un *advisory lock* de Postgres garantiza que solo una envíe.
 
+
+### 5.13. Notificaciones (`/notifications`) — requiere sesión
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| GET | `/notifications?unread=&page=&limit=` | Devuelve `{ items, unreadCount, meta }`. `unread=true` trae solo las no leídas y `unread=false` solo las leídas; sin el parámetro trae todas. Más recientes primero. |
+| PATCH | `/notifications/:id/read` | Marca una como leída. Es idempotente; si no es del usuario responde 404. |
+| POST | `/notifications/read-all` | Marca todas como leídas. Devuelve `{ updated }`. |
+
+Cada item trae `id`, `type`, `data`, `title`, `message`, `isRead`, `readAt` y `createdAt`. `title` y `message` llegan ya redactados en español, así que el front puede mostrarlos tal cual o armar su propio texto con `type` + `data`. `data` lleva lo necesario para enlazar: `appointmentId`, `petId`, `petName`, `meetingDate`, `clinicName`.
+
+**Cuándo se crea cada una:**
+
+| Evento | `type` | Para quién | Correo |
+| --- | --- | --- | --- |
+| Cita creada | `appointment.created` | Vendedor | ✅ |
+| Cita confirmada | `appointment.confirmed` | Comprador | ✅ |
+| Cita cancelada | `appointment.cancelled` | La otra parte (`data.cancellationReason` dice quién) | ✅ |
+| Cita completada | `appointment.completed` | Comprador | ✅ |
+| Recordatorio del día del encuentro | `appointment.reminder` | Ambas partes | ✅ |
+| Cita pendiente vencida (se cancela sola) | `appointment.expired` | Ambas partes | ✅ |
+| Cita confirmada sin cerrar 24 h después | `appointment.overdue` | Vendedor | ✅ |
+| Vendedor verificado / verificación retirada | `organization.verified` / `organization.revoked` | Vendedor | ✅ |
+| Mascota en favoritos con cita | `favorite.in_process` | Quien la tiene en favoritos | — |
+| Mascota en favoritos entregada | `favorite.adopted` | Quien la tiene en favoritos | — |
+| Cita cancelada por suspensión de una cuenta | `appointment.cancelled` (`account_suspended`) | Solo la contraparte | ✅ |
+
+- Las notificaciones se crean **dentro de la misma transacción** que el evento: si el evento falla, no queda ningún aviso falso.
+- Los correos salen después del commit, solo si hay SMTP y nunca a cuentas suspendidas. Si un correo falla, la notificación in-app igual queda.
+- `cancellationReason` puede ser `cancelled_by_owner`, `cancelled_by_adopter`, `expired` (sistema; `cancelledBy` queda en `null`) o `account_suspended` (`cancelledBy` = el admin).
+
+**Tarea programada de citas.** Corre dentro de la API cada `APPOINTMENT_JOBS_INTERVAL_MINUTES` (default 15 min):
+1. **Recordatorio del día:** citas confirmadas cuyo encuentro es hoy, según la hora de `APP_TIMEZONE` (America/Bogota). Desde las `APPOINTMENT_REMINDER_FROM_HOUR` (7 a. m.) avisa de todas las del día; antes de esa hora solo de las próximas 3 h, para no mandar correos de madrugada. Se envía una sola vez por cita.
+2. **Pendientes vencidas:** si llegó la hora y el vendedor nunca confirmó, la cita se cancela (`expired`), la mascota vuelve a estar disponible y se avisa a ambos.
+3. **Confirmadas sin cerrar:** `APPOINTMENT_OVERDUE_HOURS` (24 h) después del encuentro, si nadie la marcó como completada o cancelada, se avisa al vendedor una sola vez.
+
+Igual que el job de alertas, usa un *advisory lock* de Postgres para que varias réplicas no procesen dos veces.
+
+**Tiempo real:** no hay SSE ni WebSocket. El frontend debe consultar `GET /notifications?unread=true&limit=1` cada 60 segundos y usar `unreadCount` para el contador de la campana. Es la opción recomendada para este volumen: `EventSource` no permite enviar el header `Authorization`, así que SSE obligaría a poner el token en la URL, donde queda en logs. Además, una conexión abierta por usuario complica escalar detrás de Traefik.
 
 ---
 
@@ -487,6 +528,11 @@ SUPPORT_EMAIL=soporte@puppymarketcol.com
 SEARCH_ALERTS_INTERVAL_MINUTES=60
 SEARCH_ALERTS_COOLDOWN_HOURS=24
 
+APP_TIMEZONE=America/Bogota
+APPOINTMENT_JOBS_INTERVAL_MINUTES=15
+APPOINTMENT_REMINDER_FROM_HOUR=7
+APPOINTMENT_OVERDUE_HOURS=24
+
 RUN_MIGRATIONS=true
 ```
 
@@ -503,6 +549,8 @@ RUN_MIGRATIONS=true
 | `SMTP_*` | Ver [8.12](#812-correo-smtp). | Sin esto no salen correos: recuperación de contraseña, newsletter, contacto, alertas, suspensiones. |
 | `MAIL_FROM` / `APP_NAME` | `no-reply@puppymarketcol.com` / `PuppyMarket`. | Remitente y nombre que firma los correos. `MAIL_FROM` debe ser un correo del dominio verificado en el proveedor SMTP. |
 | `SEARCH_ALERTS_*` | `60` / `24`. | Cada cuántos minutos revisa alertas el servidor (0 = apagado) y horas mínimas entre correos por alerta. |
+| `APP_TIMEZONE` | `America/Bogota` | Zona horaria para saber "qué día es hoy" en los recordatorios y para las fechas de los textos. |
+| `APPOINTMENT_*` | `15` / `7` / `24` | Cada cuántos minutos corre el job de citas (0 = apagado), desde qué hora local se mandan recordatorios y a las cuántas horas una confirmada sin cerrar genera aviso. |
 | `SUPPORT_EMAIL` | Buzón que recibe "Escríbenos". | Vacío = los mensajes solo se guardan en la BD. |
 
 > **Front y API en el mismo dominio o en distintos:**
@@ -568,6 +616,7 @@ Sin SMTP la API funciona, pero **no sale ningún correo**. Correos que envía el
 | Alerta de búsqueda | el comprador | job periódico (ver 5.12) |
 | Organización verificada | la organización | `PATCH /admin/organizations/:id/verify` |
 | Cuenta suspendida / reactivada | el usuario | `PATCH /admin/users/:id/suspend` y `/reactivate` |
+| Notificaciones importantes de citas y verificación | según el evento | ver la tabla de 5.13 |
 
 **1. Elige un proveedor.** Lo recomendado es uno transaccional con el dominio verificado; sin eso, los correos caen en spam.
 
@@ -707,7 +756,8 @@ Es solo configuración; no hay que tocar código:
 ✅ Alertas de búsqueda por correo
 ✅ Correos de confirmación de newsletter y acuse del formulario de contacto
 ✅ Filtros del buscador solo con razas y ciudades que tienen mascotas disponibles
-✅ Suite de pruebas automatizadas (62 pruebas de punta a punta contra Postgres real)
+✅ Suite de pruebas automatizadas (76 pruebas de punta a punta contra Postgres real)
+✅ Notificaciones in-app con correo para las importantes, recordatorios y vencimiento automático de citas
 
 ⏳ **Pendiente**
 1. **Bloqueo por cuenta** tras varios intentos de login fallidos (hoy el límite es por IP).
@@ -715,4 +765,5 @@ Es solo configuración; no hay que tocar código:
 3. **CI en GitHub Actions** que corra `docker-compose.test.yml` y `npm audit` en cada push y bloquee el merge si fallan.
 4. **OpenAPI/Swagger** generado desde los schemas Zod (`@asteasolutions/zod-to-openapi`).
 5. **Worker aparte para Puppeteer** cuando el tráfico lo justifique (la interfaz `contract-queue.js` ya está lista).
-6. **Limpieza periódica** de `PasswordResetTokens` y `RefreshTokens` vencidos.
+6. **Limpieza periódica** de `PasswordResetTokens`, `RefreshTokens` vencidos y notificaciones leídas antiguas.
+7. **Tiempo real (SSE/WebSocket) para notificaciones**, si el polling de 60 s llega a quedarse corto.

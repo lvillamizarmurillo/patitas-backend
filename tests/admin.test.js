@@ -64,7 +64,8 @@ describe('Suspender y reactivar usuarios', () => {
     const res = await api().patch(`${API}/admin/users/${seller.user.id}/suspend`).set(auth(admin.token))
       .send({ reason: 'Publicaciones engañosas' }).expect(200);
     expect(res.body.data).toMatchObject({ isSuspended: true, suspensionReason: 'Publicaciones engañosas' });
-    expect(mails.find((m) => m.to === seller.user.email).html).toContain('Publicaciones engañosas');
+    const suspendMail = mails.find((m) => m.to === seller.user.email && m.subject === 'Tu cuenta fue suspendida');
+    expect(suspendMail.html).toContain('Publicaciones engañosas');
 
     // El token que ya tenía deja de servir al instante; login y refresh bloqueados
     const me = await api().get(`${API}/auth/me`).set(auth(seller.token)).expect(403);

@@ -45,6 +45,13 @@ const schema = z.object({
   // Alertas de búsqueda: cada cuánto revisa el job (0 = apagado) y mínimo de horas entre correos por alerta
   SEARCH_ALERTS_INTERVAL_MINUTES: z.coerce.number().int().min(0).max(1440).default(60),
   SEARCH_ALERTS_COOLDOWN_HOURS: z.coerce.number().int().min(1).max(168).default(24),
+
+  // Job de citas: recordatorio del día del encuentro, vencimiento de pendientes y aviso de confirmadas sin cerrar
+  APP_TIMEZONE: z.string().default('America/Bogota')
+    .refine((tz) => { try { new Intl.DateTimeFormat('es-CO', { timeZone: tz }); return true; } catch { return false; } }, 'Zona horaria inválida'),
+  APPOINTMENT_JOBS_INTERVAL_MINUTES: z.coerce.number().int().min(0).max(1440).default(15),
+  APPOINTMENT_REMINDER_FROM_HOUR: z.coerce.number().int().min(0).max(23).default(7),
+  APPOINTMENT_OVERDUE_HOURS: z.coerce.number().int().min(1).max(720).default(24),
 }).superRefine((d, ctx) => {
   const fail = (path, message) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
 

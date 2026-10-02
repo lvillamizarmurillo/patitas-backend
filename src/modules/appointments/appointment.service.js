@@ -1,5 +1,7 @@
+const { Op } = require('sequelize');
 const { sequelize, Appointment, Pet, User, VetClinic } = require('../../models');
 const AppError = require('../../utils/AppError');
+const events = require('../notifications/notification.events');
 
 const TRANSITIONS = {
   pending:   { confirmed: ['owner'],  cancelled: ['owner', 'adopter'] },
@@ -23,6 +25,9 @@ exports.create = (adopter, { petId, clinicId, meetingDate, notes }) =>
     const appointment = await Appointment.create(
       { petId, clinicId, adopterId: adopter.id, meetingDate, notes }, { transaction: t });
     await pet.update({ status: 'in_process' }, { transaction: t });
+
+    const { fullName } = await User.findByPk(adopter.id, { attributes: ['fullName'], transaction: t });
+    await events.appointmentCreated({ appt: appointment, pet, adopterName: fullName }, t);
     return appointment;
   });
 
@@ -39,25 +44,31 @@ exports.updateStatus = (user, id, newStatus) =>
     if (!allowed) throw AppError.conflict(`No se puede pasar de "${appt.status}" a "${newStatus}"`);
     if (!allowed.includes(actor)) throw AppError.forbidden('No puedes realizar esta acción');
 
-    await appt.update({ status: newStatus }, { transaction: t });
+    const cancelInfo = newStatus === 'cancelled'
+      ? { cancelledBy: user.id, cancellationReason: actor === 'owner' ? 'cancelled_by_owner' : 'cancelled_by_adopter' }
+      : {};
+    await appt.update({ status: newStatus, ...cancelInfo }, { transaction: t });
     if (newStatus === 'cancelled') await pet.update({ status: 'available' }, { transaction: t });
     if (newStatus === 'completed') {
       await pet.update({ status: 'adopted' }, { transaction: t });
       t.afterCommit(() => require('../../queue/contract-queue').enqueueContractGeneration(appt.id));
     }
+    await events.appointmentStatusChanged({ appt, pet, status: newStatus, actor }, t);
     return appt;
   });
 
+// Citas donde el usuario participa como comprador O como dueño de la mascota, sin importar su rol
+// (un refugio o un particular también pueden agendar citas como compradores).
 exports.list = async (user, { status, page, limit }) => {
-  const where = status ? { status } : {};
-  const petInclude = { model: Pet, as: 'pet', attributes: ['id', 'name', 'imageUrl', 'ownerId'], required: true };
-  if (user.role === 'adopter') where.adopterId = user.id;
-  else petInclude.where = { ownerId: user.id };
+  const where = {
+    ...(status ? { status } : {}),
+    [Op.or]: [{ adopterId: user.id }, { '$pet.ownerId$': user.id }],
+  };
 
   const { rows, count } = await Appointment.findAndCountAll({
-    where, distinct: true, limit, offset: (page - 1) * limit, order: [['meetingDate', 'DESC']],
+    where, distinct: true, subQuery: false, limit, offset: (page - 1) * limit, order: [['meetingDate', 'DESC']],
     include: [
-      petInclude,
+      { model: Pet, as: 'pet', attributes: ['id', 'name', 'imageUrl', 'ownerId'], required: true },
       { model: VetClinic, as: 'clinic', attributes: ['id', 'name', 'address', 'city', 'phone'] },
       { model: User, as: 'adopter', attributes: ['id', 'fullName', 'email', 'phone'] },
     ],

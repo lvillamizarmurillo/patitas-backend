@@ -1,12 +1,12 @@
 const { Op } = require('sequelize');
 const { sequelize, User, Appointment, Pet, VetClinic, RefreshToken } = require('../../models');
-const env = require('../../config/env');
 const AppError = require('../../utils/AppError');
 const mailer = require('../../utils/mailer');
 const logger = require('../../config/logger');
 const { escapeHtml } = require('../../utils/escape');
 const { escapeLike } = require('../../utils/escape');
 const { toAdminUserDTO } = require('./admin.dto');
+const events = require('../notifications/notification.events');
 
 exports.listOrganizations = async (status) => {
   const where = { role: ['shelter', 'breeder'] };
@@ -19,10 +19,7 @@ exports.verify = async (adminId, orgId) => {
   const org = await User.findOne({ where: { id: orgId, role: ['shelter', 'breeder'] } });
   if (!org) throw AppError.notFound('Organización no encontrada');
   await org.update({ isVerified: true, verifiedAt: new Date(), verifiedBy: adminId });
-  mailer.send({
-    to: org.email, subject: `Tu organización fue verificada en ${env.APP_NAME}`,
-    html: `<p>Hola ${org.fullName}, tu cuenta ya está verificada y puede publicar mascotas.</p>`,
-  }).catch(() => {});
+  await events.organizationVerificationChanged(org.id, true); // notificación + correo
   return org;
 };
 
@@ -30,6 +27,7 @@ exports.revoke = async (orgId) => {
   const org = await User.findOne({ where: { id: orgId, role: ['shelter', 'breeder'] } });
   if (!org) throw AppError.notFound('Organización no encontrada');
   await org.update({ isVerified: false, verifiedAt: null, verifiedBy: null });
+  await events.organizationVerificationChanged(org.id, false);
   return org;
 };
 
@@ -81,12 +79,13 @@ exports.suspend = async (adminId, userId, { reason } = {}) => {
 
     const appts = await Appointment.findAll({
       where: { status: ACTIVE, [Op.or]: [{ adopterId: userId }, { '$pet.ownerId$': userId }] },
-      include: [{ model: Pet, as: 'pet', attributes: ['id', 'ownerId'] }],
+      include: [{ model: Pet, as: 'pet', attributes: ['id', 'ownerId', 'name'] }],
       transaction: t,
     });
     for (const appt of appts) {
-      await appt.update({ status: 'cancelled' }, { transaction: t });
+      await appt.update({ status: 'cancelled', cancelledBy: adminId, cancellationReason: 'account_suspended' }, { transaction: t });
       await Pet.update({ status: 'available' }, { where: { id: appt.petId, status: 'in_process' }, transaction: t });
+      await events.appointmentCancelledBySuspension({ appt, pet: appt.pet, suspendedUserId: userId }, t);
     }
   });
 
