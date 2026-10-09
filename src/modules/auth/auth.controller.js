@@ -22,9 +22,9 @@ exports.login = async (req, res) => {
 };
 
 exports.refresh = async (req, res) => {
-  const { accessToken, refreshToken } = await service.refresh(req.cookies?.refreshToken, req.headers['user-agent']);
+  const { accessToken, refreshToken, user } = await service.refresh(req.cookies?.refreshToken, req.headers['user-agent']);
   res.cookie('refreshToken', refreshToken, cookieOpts);
-  res.json({ data: { accessToken } });
+  res.json({ data: { accessToken, user } });
 };
 
 exports.logout = async (req, res) => {
@@ -52,3 +52,6 @@ exports.resetPassword = async (req, res) => {
   res.clearCookie('refreshToken', cookieBase);
   res.json({ data: { message: 'Contraseña actualizada. Inicia sesión de nuevo.' } });
 };
+
+exports.getPayoutInfo = async (req, res) => res.json({ data: await service.getPayoutInfo(req.user.id) });
+exports.setPayoutInfo = async (req, res) => res.json({ data: await service.setPayoutInfo(req.user.id, req.valid.body) });

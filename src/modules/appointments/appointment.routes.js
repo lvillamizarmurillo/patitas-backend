@@ -10,5 +10,8 @@ router.post('/', appointmentLimiter, validate(s.create), ctrl.create);
 router.get('/', validate(s.list), ctrl.list);
 router.get('/:id', validate(s.byId), ctrl.getById);
 router.patch('/:id/status', validate(s.updateStatus), ctrl.updateStatus);
+router.post('/:id/proposal', validate(s.propose), ctrl.propose);
+router.post('/:id/proposal/accept', validate(s.byId), ctrl.acceptProposal);
+router.post('/:id/proposal/reject', validate(s.byId), ctrl.rejectProposal);
 
 module.exports = router;

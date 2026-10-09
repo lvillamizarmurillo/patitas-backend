@@ -52,6 +52,20 @@ const schema = z.object({
   APPOINTMENT_JOBS_INTERVAL_MINUTES: z.coerce.number().int().min(0).max(1440).default(15),
   APPOINTMENT_REMINDER_FROM_HOUR: z.coerce.number().int().min(0).max(23).default(7),
   APPOINTMENT_OVERDUE_HOURS: z.coerce.number().int().min(1).max(720).default(24),
+
+  // Veterinarias de entrega: ciudades donde se opera (separadas por coma)
+  CLINIC_CITIES: z.string().default('Bucaramanga,Floridablanca,Piedecuesta'),
+  // Agendamiento: días con horarios que se ofrecen y hasta cuántos días adelante se buscan
+  BOOKING_DAYS: z.coerce.number().int().min(1).max(14).default(3),
+  BOOKING_SEARCH_DAYS: z.coerce.number().int().min(1).max(60).default(21),
+
+  // Comisión que se suma al precio del vendedor (0.17 = 17 %)
+  COMMISSION_RATE: z.coerce.number().min(0).max(1).default(0.17),
+  // Pagos (Wompi). Sin WOMPI_PUBLIC_KEY el pago en línea queda deshabilitado y la cita se crea sin checkoutUrl.
+  WOMPI_PUBLIC_KEY: z.string().optional(),
+  WOMPI_INTEGRITY_SECRET: z.string().optional(),
+  WOMPI_EVENTS_SECRET: z.string().optional(),
+  PAYMENT_EXPIRY_MINUTES: z.coerce.number().int().min(5).max(1440).default(30),
 }).superRefine((d, ctx) => {
   const fail = (path, message) => ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
 
@@ -60,6 +74,9 @@ const schema = z.object({
   }
   if (d.STORAGE_DRIVER === 'cloudinary' && !d.CLOUDINARY_URL) fail('CLOUDINARY_URL', 'Requerida con STORAGE_DRIVER=cloudinary');
   if (d.STORAGE_DRIVER === 's3' && !d.S3_BUCKET) fail('S3_BUCKET', 'Requerida con STORAGE_DRIVER=s3');
+  if (d.WOMPI_PUBLIC_KEY && !(d.WOMPI_INTEGRITY_SECRET && d.WOMPI_EVENTS_SECRET)) {
+    fail('WOMPI_INTEGRITY_SECRET', 'Con WOMPI_PUBLIC_KEY también se requieren WOMPI_INTEGRITY_SECRET y WOMPI_EVENTS_SECRET');
+  }
 
   if (d.NODE_ENV === 'production') {
     const origins = d.CORS_ORIGINS.split(',').map((o) => o.trim());

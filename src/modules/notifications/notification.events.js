@@ -56,8 +56,16 @@ const favoritersOf = async (petId, exclude, transaction) => {
   return favs.map((f) => f.userId);
 };
 
-exports.appointmentCreated = async ({ appt, pet, adopterName }, transaction) => {
-  const data = await apptData(appt, pet, transaction, { adopterName });
+// Desglose del pago para los textos y correos de la cita (13.7)
+const paymentData = (pet, option) => {
+  if (pet.adoptionType !== 'sale' || !option) return {};
+  const { breakdown } = require('../payments/payment.service');
+  const b = breakdown(pet.price, option);
+  return { paymentOption: option, amountPaid: b.amount, payAtMeeting: b.payAtMeeting };
+};
+
+exports.appointmentCreated = async ({ appt, pet, adopterName, payment }, transaction) => {
+  const data = await apptData(appt, pet, transaction, { adopterName, ...paymentData(pet, payment?.option || appt.paymentOption) });
   const favs = await favoritersOf(pet.id, [appt.adopterId, pet.ownerId], transaction);
   await notify([
     { userId: pet.ownerId, type: 'appointment.created', data },
@@ -74,12 +82,37 @@ exports.appointmentStatusChanged = async ({ appt, pet, status, actor }, transact
     const other = actor === 'owner' ? appt.adopterId : pet.ownerId;
     await notify([{ userId: other, type: 'appointment.cancelled', data: { ...data, cancellationReason: appt.cancellationReason } }], transaction);
   } else if (status === 'completed') {
+    // Al comprador se le avisa "¡Entrega completada!" cuando el contrato ya existe (ver contract.service)
     const favs = await favoritersOf(pet.id, [appt.adopterId, pet.ownerId], transaction);
-    await notify([
-      { userId: appt.adopterId, type: 'appointment.completed', data },
-      ...favs.map((userId) => ({ userId, type: 'favorite.adopted', data: { petId: pet.id, petName: pet.name } })),
-    ], transaction);
+    await notify(favs.map((userId) => ({ userId, type: 'favorite.adopted', data: { petId: pet.id, petName: pet.name } })), transaction);
   }
+};
+
+// Otro horario: propuesto → comprador; aceptado o rechazado → vendedor
+exports.appointmentProposal = async ({ appt, pet, kind }, transaction) => {
+  const data = await apptData(appt, pet, transaction, { proposedMeetingDate: appt.proposedMeetingDate });
+  const map = {
+    proposed: { userId: appt.adopterId, type: 'appointment.rescheduled' },
+    accepted: { userId: pet.ownerId, type: 'appointment.proposal_accepted' },
+    rejected: { userId: pet.ownerId, type: 'appointment.proposal_rejected' },
+  };
+  await notify([{ ...map[kind], data }], transaction);
+};
+
+// Contrato listo (o falló definitivamente): "¡Entrega completada!" al comprador; si falló, aviso al vendedor y al equipo
+exports.contractReady = async ({ appt, pet }) => {
+  const data = await apptData(appt, pet, undefined);
+  await notify([{ userId: appt.adopterId, type: 'appointment.completed', data }]);
+};
+
+exports.contractFailed = async ({ appt, pet }) => {
+  const data = await apptData(appt, pet, undefined);
+  const admins = await User.findAll({ where: { role: 'admin', suspendedAt: null }, attributes: ['id'] });
+  await notify([
+    { userId: appt.adopterId, type: 'appointment.completed', data: { ...data, contractDelayed: true } },
+    { userId: pet.ownerId, type: 'contract.failed', data },
+    ...admins.map((a) => ({ userId: a.id, type: 'contract.failed', data })),
+  ]);
 };
 
 // Cita cancelada por suspensión de una de las partes: se avisa solo a la otra

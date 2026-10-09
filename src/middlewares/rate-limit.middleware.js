@@ -22,3 +22,5 @@ exports.newsletterLimiter = make(60, 5);
 exports.newsletterUnsubscribeLimiter = make(60, 5);
 exports.supportLimiter = make(60, 5);
 exports.alertLimiter = make(60, 20);
+exports.clinicRequestLimiter = make(60, 5);
+exports.reviewLimiter = make(60, 20);

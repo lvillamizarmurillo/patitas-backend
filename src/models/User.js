@@ -5,7 +5,7 @@ const bcrypt = require('bcryptjs');
 const User = sequelize.define('User', {
   id: { type: DataTypes.UUID, defaultValue: DataTypes.UUIDV4, primaryKey: true },
   role: {
-    type: DataTypes.ENUM('adopter', 'shelter', 'breeder', 'individual', 'admin'),
+    type: DataTypes.ENUM('adopter', 'shelter', 'breeder', 'individual', 'admin', 'staff'),
     allowNull: false, defaultValue: 'adopter',
   },
   fullName: { type: DataTypes.STRING, allowNull: false },
@@ -23,11 +23,19 @@ const User = sequelize.define('User', {
   suspendedAt: { type: DataTypes.DATE },
   suspendedBy: { type: DataTypes.UUID },
   suspensionReason: { type: DataTypes.STRING(500) },
+  // Equipo: rol con permisos del panel admin y el rol que tenía antes de entrar al equipo
+  staffRoleId: { type: DataTypes.UUID },
+  previousRole: { type: DataTypes.STRING(20) },
+  // Calificación pública del vendedor (cache, se recalcula al calificar u ocultar)
+  ratingAverage: { type: DataTypes.DECIMAL(3, 2) },
+  ratingCount: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+  // Datos para transferirle al vendedor (sensibles: fuera del defaultScope)
+  payoutInfo: { type: DataTypes.JSONB },
 }, {
   timestamps: true,
   paranoid: true,
-  defaultScope: { attributes: { exclude: ['password'] } },
-  scopes: { withPassword: {} },
+  defaultScope: { attributes: { exclude: ['password', 'payoutInfo'] } },
+  scopes: { withPassword: {}, withPayoutInfo: { attributes: { exclude: ['password'] } } },
   hooks: {
     beforeCreate: async (user) => { if (user.password) user.password = await bcrypt.hash(user.password, 12); },
     beforeUpdate: async (user) => { if (user.changed('password')) user.password = await bcrypt.hash(user.password, 12); },

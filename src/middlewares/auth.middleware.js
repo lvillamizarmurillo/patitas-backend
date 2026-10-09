@@ -1,7 +1,8 @@
 const jwt = require('jsonwebtoken');
 const env = require('../config/env');
 const AppError = require('../utils/AppError');
-const { User } = require('../models');
+const { User, StaffRole } = require('../models');
+const { expand } = require('../config/permissions');
 
 const readBearer = (req) => {
   const [scheme, token] = (req.headers.authorization || '').split(' ');
@@ -23,10 +24,14 @@ exports.authMiddleware = async (req, _res, next) => {
   } catch {
     return next(AppError.unauthorized('Token inválido o expirado'));
   }
-  const user = await User.findByPk(claims.id, { attributes: ['id', 'role', 'suspendedAt'] });
+  const user = await User.findByPk(claims.id, {
+    attributes: ['id', 'role', 'suspendedAt'],
+    include: [{ model: StaffRole, as: 'staffRole', attributes: ['permissions'] }],
+  });
   if (!user) return next(AppError.unauthorized('Sesión inválida'));
   if (user.suspendedAt) return next(AppError.suspended());
   req.user = { id: user.id, role: user.role };
+  if (user.role === 'staff') req.user.permissions = expand(user.staffRole?.permissions || []);
   next();
 };
 
@@ -41,3 +46,14 @@ exports.optionalAuth = (req, _res, next) => {
 
 exports.requireRole = (...roles) => (req, _res, next) =>
   roles.includes(req.user?.role) ? next() : next(AppError.forbidden('Rol insuficiente'));
+
+// Panel admin: el `admin` pasa siempre; una cuenta `staff` solo si su rol tiene alguno de los permisos.
+// Esta es la protección real: el frontend solo esconde botones.
+exports.requirePermission = (...perms) => (req, _res, next) => {
+  if (req.user?.role === 'admin') return next();
+  if (req.user?.role === 'staff' && perms.some((p) => req.user.permissions?.includes(p))) return next();
+  return next(AppError.forbidden('No tienes permiso para esta acción'));
+};
+
+// Solo el admin principal (acciones sin permiso de equipo: pagos, desembolsos, auditoría)
+exports.requireAdmin = exports.requireRole('admin');

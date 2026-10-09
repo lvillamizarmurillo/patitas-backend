@@ -4,10 +4,13 @@ const logger = require('../../config/logger');
 const { sequelize, SearchAlert, Pet, User } = require('../../models');
 const mailer = require('../../utils/mailer');
 const { escapeHtml, escapeLike } = require('../../utils/escape');
+const { publicPriceOf } = require('../../config/business');
+const { PUBLIC_PRICE_SQL } = require('../pets/pet.service');
 
 const LOCK_KEY = 74201; // pg advisory lock: si hay varias réplicas, solo una procesa a la vez
 const MAX_PETS_PER_EMAIL = 10;
-const formatPrice = (p) => (Number(p) > 0 ? `$${Number(p).toLocaleString('es-CO')}` : 'En adopción');
+// El comprador ve (y filtra por) el precio publicado, con la comisión incluida
+const formatPrice = (pet) => (pet.adoptionType === 'sale' ? `$${publicPriceOf(pet.price).toLocaleString('es-CO')}` : 'En adopción');
 
 const matchWhere = (alert, until) => {
   const where = {
@@ -18,12 +21,11 @@ const matchWhere = (alert, until) => {
   if (alert.breed) where.breed = { [Op.iLike]: `%${escapeLike(alert.breed)}%` };
   if (alert.city) where.city = { [Op.iLike]: `%${escapeLike(alert.city)}%` };
   if (alert.adoptionType) where.adoptionType = alert.adoptionType;
-  if (alert.minPrice !== null || alert.maxPrice !== null) {
-    where.price = {
-      ...(alert.minPrice !== null ? { [Op.gte]: alert.minPrice } : {}),
-      ...(alert.maxPrice !== null ? { [Op.lte]: alert.maxPrice } : {}),
-    };
-  }
+  // minPrice/maxPrice los arma el frontend con el precio publicado (con comisión): se compara contra ese
+  const priceRange = [];
+  if (alert.minPrice !== null) priceRange.push(sequelize.where(sequelize.literal(PUBLIC_PRICE_SQL), { [Op.gte]: alert.minPrice }));
+  if (alert.maxPrice !== null) priceRange.push(sequelize.where(sequelize.literal(PUBLIC_PRICE_SQL), { [Op.lte]: alert.maxPrice }));
+  if (priceRange.length) where[Op.and] = priceRange;
   return where;
 };
 
@@ -37,7 +39,7 @@ const searchLink = (alert) => {
 
 const renderEmail = (user, alert, pets, total) => {
   const items = pets.map((p) =>
-    `<li><strong>${escapeHtml(p.name)}</strong> — ${escapeHtml(p.breed)}, ${escapeHtml(p.city)} — ${formatPrice(p.price)}</li>`).join('');
+    `<li><strong>${escapeHtml(p.name)}</strong> — ${escapeHtml(p.breed)}, ${escapeHtml(p.city)} — ${formatPrice(p)}</li>`).join('');
   const more = total > pets.length ? `<p>…y ${total - pets.length} más.</p>` : '';
   const resumen = total === 1 ? 'una mascota nueva que coincide' : `${total} mascotas nuevas que coinciden`;
   return `<p>Hola ${escapeHtml(user.fullName)}, hay ${resumen} con tu alerta:</p>

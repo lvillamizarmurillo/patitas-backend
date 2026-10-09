@@ -1,26 +1,13 @@
 const { Op } = require('sequelize');
 const env = require('../../config/env');
-const { sequelize, Appointment, Pet } = require('../../models');
+const { sequelize, Appointment, Pet, Payment, Review } = require('../../models');
+const { PAYMENT_EXPIRY_MINUTES, REVIEW_DELAY_DAYS } = require('../../config/business');
 const events = require('../notifications/notification.events');
+const { localParts, endOfLocalDay } = require('../../utils/time');
 
 const LOCK_KEY = 74202; // pg advisory lock: si hay varias réplicas, solo una procesa a la vez
 const HOUR = 3600000;
 
-// Fecha/hora "de pared" en la zona horaria del negocio (por defecto America/Bogota)
-const localParts = (date) => {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: env.APP_TIMEZONE, hourCycle: 'h23',
-    year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit',
-  }).formatToParts(date);
-  return Object.fromEntries(parts.filter((p) => p.type !== 'literal').map((p) => [p.type, Number(p.value)]));
-};
-
-// Instante UTC en que termina el día local de `now`
-const endOfLocalDay = (now) => {
-  const p = localParts(now);
-  const offset = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - Math.floor(now.getTime() / 1000) * 1000;
-  return new Date(Date.UTC(p.year, p.month - 1, p.day, 23, 59, 59, 999) - offset);
-};
 exports.endOfLocalDay = endOfLocalDay;
 
 // Recordatorio del día del encuentro a ambas partes, para citas confirmadas.
@@ -50,14 +37,21 @@ const sendReminders = async (now, t) => {
 // Pendientes cuya fecha ya pasó sin que el vendedor confirmara: se cancelan y la mascota vuelve a estar disponible
 const expirePending = async (now, t) => {
   const appts = await Appointment.findAll({
-    where: { status: 'pending', meetingDate: { [Op.lte]: now } },
+    // Mientras hay una propuesta de otro horario, la que vence es la fecha propuesta
+    where: {
+      status: 'pending',
+      [Op.and]: [sequelize.where(sequelize.fn('COALESCE', sequelize.col('proposedMeetingDate'), sequelize.col('meetingDate')), { [Op.lte]: now })],
+    },
     include: [{ model: Pet, as: 'pet', attributes: ['id', 'name', 'ownerId'], required: true }],
     transaction: t, lock: { level: t.LOCK.UPDATE, of: Appointment }, skipLocked: true,
   });
   for (const appt of appts) {
-    await appt.update({ status: 'cancelled', cancelledBy: null, cancellationReason: 'expired' }, { transaction: t });
+    const data = {
+      appointmentId: appt.id, petId: appt.pet.id, petName: appt.pet.name, meetingDate: appt.proposedMeetingDate || appt.meetingDate,
+    };
+    await appt.update({ status: 'cancelled', cancelledBy: null, cancellationReason: 'expired', proposedMeetingDate: null, proposedAt: null }, { transaction: t });
     await Pet.update({ status: 'available' }, { where: { id: appt.petId, status: 'in_process' }, transaction: t });
-    const data = { appointmentId: appt.id, petId: appt.pet.id, petName: appt.pet.name, meetingDate: appt.meetingDate };
+    await require('../payments/payment.service').flagRefundIfPaid(appt.id, 'La cita venció sin confirmarse', t);
     await events.notify([
       { userId: appt.adopterId, type: 'appointment.expired', data },
       { userId: appt.pet.ownerId, type: 'appointment.expired', data },
@@ -84,8 +78,46 @@ const flagOverdue = async (now, t) => {
   return appts.length;
 };
 
-exports.runAppointmentJobs = (now = new Date()) =>
-  sequelize.transaction(async (t) => {
+// Reservas que esperan pago y no se pagaron a tiempo (+5 min de gracia por si el webhook viene en camino):
+// se cancelan, el pago queda vencido y la mascota sigue disponible
+const expireUnpaid = async (now, t) => {
+  const limit = new Date(now.getTime() - (PAYMENT_EXPIRY_MINUTES + 5) * 60000);
+  const appts = await Appointment.findAll({
+    where: { status: 'pending_payment', createdAt: { [Op.lte]: limit } },
+    include: [{ model: Pet, as: 'pet', attributes: ['id', 'name'], required: true, paranoid: false }],
+    transaction: t, lock: { level: t.LOCK.UPDATE, of: Appointment }, skipLocked: true,
+  });
+  for (const appt of appts) {
+    await appt.update({ status: 'cancelled', cancelledBy: null, cancellationReason: 'payment_expired' }, { transaction: t });
+    await Payment.update({ status: 'expired' }, { where: { appointmentId: appt.id, status: 'pending' }, transaction: t });
+    await events.notify([{ userId: appt.adopterId, type: 'payment.expired', data: { appointmentId: appt.id, petId: appt.pet.id, petName: appt.pet.name } }], t);
+  }
+  return appts.length;
+};
+
+// Encuesta disponible: citas confirmadas o completadas de hace REVIEW_DELAY_DAYS días o más, sin calificar y sin aviso
+const requestReviews = async (now, t) => {
+  const appts = await Appointment.findAll({
+    where: {
+      status: ['confirmed', 'completed'], reviewRequestedAt: null,
+      meetingDate: { [Op.lte]: new Date(now.getTime() - REVIEW_DELAY_DAYS * 24 * HOUR) },
+    },
+    include: [
+      { model: Pet, as: 'pet', attributes: ['id', 'name'], required: true, paranoid: false },
+      { model: Review, as: 'review', attributes: ['id'], required: false },
+    ],
+    transaction: t,
+  });
+  const pending = appts.filter((a) => !a.review);
+  for (const appt of pending) {
+    await events.notify([{ userId: appt.adopterId, type: 'review.requested', data: { appointmentId: appt.id, petId: appt.pet.id, petName: appt.pet.name } }], t);
+  }
+  if (appts.length) await Appointment.update({ reviewRequestedAt: now }, { where: { id: appts.map((a) => a.id) }, transaction: t });
+  return pending.length;
+};
+
+exports.runAppointmentJobs = async (now = new Date()) => {
+  const result = await sequelize.transaction(async (t) => {
     const [[{ locked }]] = await sequelize.query('SELECT pg_try_advisory_xact_lock(:key) AS locked',
       { replacements: { key: LOCK_KEY }, transaction: t });
     if (!locked) return { skipped: 'otra-instancia-procesando' };
@@ -93,5 +125,12 @@ exports.runAppointmentJobs = (now = new Date()) =>
       recordatorios: await sendReminders(now, t),
       vencidas: await expirePending(now, t),
       sinCerrar: await flagOverdue(now, t),
+      reservasSinPagar: await expireUnpaid(now, t),
+      encuestas: await requestReviews(now, t),
     };
   });
+  if (result.skipped) return result;
+  // El PDF tarda unos segundos: se reintenta fuera de la transacción del job
+  result.contratos = await require('../contracts/contract.service').retryPending(3, now.getTime());
+  return result;
+};

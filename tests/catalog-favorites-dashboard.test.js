@@ -19,10 +19,12 @@ describe('Catálogos', () => {
   });
 
   test('clínicas activas, filtrables por ciudad', async () => {
-    await createClinic({ name: 'Activa', city: 'Cali' });
-    await VetClinic.create({ name: 'Cerrada', address: 'x', city: 'Cali', isActive: false });
-    const res = await api().get(`${API}/catalogs/clinics?city=Cali`).expect(200);
+    await createClinic({ name: 'Activa', city: 'Girón' });
+    await createClinic({ name: 'Deshabilitada', city: 'Girón', isActive: false });
+    await createClinic({ name: 'Por revisar', city: 'Girón', status: 'pending', isActive: false });
+    const res = await api().get(`${API}/catalogs/clinics?city=Girón`).expect(200);
     expect(res.body.data.map((c) => c.name)).toEqual(['Activa']);
+    expect(res.body.data[0]).toEqual(expect.objectContaining({ phone: expect.any(String), schedule: expect.any(Object) }));
   });
 });
 

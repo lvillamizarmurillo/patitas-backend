@@ -1,6 +1,6 @@
 # PATITAS BACKEND — PLATAFORMA DE ADOPCIÓN Y VENTA DE MASCOTAS 🐾
 
-API REST de la plataforma "Patitas". Conecta adoptantes con refugios, criadores y particulares: publicación de mascotas con galería de fotos, agendamiento de citas en clínicas veterinarias, contratos en PDF, favoritos, verificación de organizaciones y panel de administración.
+API REST de PuppyMarket (proyecto "Patitas"). Conecta compradores con criaderos, refugios y particulares: publicación de mascotas con galería de fotos, veterinarias de entrega con horario, agendamiento en una ventana de 3 días, pago en línea de la reserva (Wompi) con comisión del 17 %, propuesta de otro horario, contratos en PDF, calificaciones de vendedores, notificaciones, bandeja de soporte y un panel admin con roles del equipo.
 
 Es un **monolito modular por dominios** sobre Node.js 22, Express 5 y PostgreSQL 15. Se despliega en **Dokploy** con una sola imagen Docker, las imágenes viven en **Cloudinary**, y el código ya está listo para pasar a **AWS** (RDS + S3 + ECS) sin reescribir lógica de negocio.
 
@@ -13,7 +13,7 @@ Es un **monolito modular por dominios** sobre Node.js 22, Express 5 y PostgreSQL
 3. [Desarrollo local y pruebas](#3-desarrollo-local-y-pruebas)
 4. [Base de datos: migraciones, seed y admin](#4-base-de-datos-migraciones-seed-y-admin)
 5. [Endpoints de la API](#5-endpoints-de-la-api)
-6. [Imágenes de las publicaciones](#6-imágenes-de-las-publicaciones)
+6. [Reglas de negocio: imágenes, veterinarias, agenda, pagos, calificaciones y equipo](#6-reglas-de-negocio-imágenes-veterinarias-agenda-pagos-calificaciones-y-equipo)
 7. [Seguridad](#7-seguridad)
 8. [Despliegue en Dokploy (paso a paso)](#8-despliegue-en-dokploy-paso-a-paso)
 9. [Backups de la base de datos](#9-backups-de-la-base-de-datos)
@@ -66,24 +66,30 @@ Las respuestas exitosas siempre tienen la forma `{ "data": ..., "meta"?: ... }`.
 └── src/
     ├── app.js                 # Helmet, CORS, rate limit global, health checks, rutas
     ├── routes/index.js        # Monta todos los routers de src/modules
-    ├── config/                # env (validación Zod), database, logger, sequelize-cli
+    ├── config/                # env (validación Zod), database, logger, business (reglas: comisión, ciudades,
+    │                          # agendamiento), permissions (catálogo de permisos del equipo)
     ├── models/                # Modelos + index.js con TODAS las asociaciones
     ├── middlewares/           # auth, validate, upload, rate-limit, error, not-found
     ├── providers/storage/     # cloudinary | s3 | local (mismo contrato: upload/remove/getSignedUrl)
+    ├── providers/payments/    # wompi (checkout firmado + verificación del webhook)
     ├── queue/                 # Generación de contratos (inline hoy, SQS mañana)
     ├── jobs/                  # Tareas periódicas en proceso (citas y alertas de búsqueda)
-    ├── utils/                 # AppError, schemas Zod comunes, mailer, escape
+    ├── utils/                 # AppError, schemas Zod, mailer, escape, time (zona horaria), schedule (horarios), audit
     └── modules/
         ├── auth/              # registro, login, refresh, logout, perfil, contraseñas
         ├── pets/              # CRUD de publicaciones + galería/padres
         ├── appointments/      # citas con bloqueo de fila y máquina de estados
         ├── contracts/         # PDF del contrato + URL firmada
         ├── favorites/         # favoritos por usuario
-        ├── catalogs/          # razas, ciudades y clínicas para filtros
+        ├── catalogs/          # razas, ciudades, veterinarias habilitadas y tasa de comisión
         ├── dashboard/         # métricas del publicador
-        ├── admin/             # verificación de organizaciones, usuarios, citas
+        ├── admin/             # panel: resumen, vendedores, usuarios, citas, pagos, desembolsos, auditoría
+        ├── clinics/           # veterinarias de entrega: solicitudes públicas y administración
+        ├── payments/          # pago en línea de la reserva, webhook de Wompi, devoluciones y desembolsos
+        ├── reviews/           # encuesta de satisfacción y calificación de vendedores
+        ├── staff/             # roles del equipo con permisos
         ├── newsletter/        # suscripción pública al boletín
-        ├── support/           # formulario "Escríbenos"
+        ├── support/           # formulario "Escríbenos" + bandeja de soporte del admin
         ├── alerts/            # alertas de búsqueda + job que envía los correos
         └── notifications/     # notificaciones in-app: eventos, textos, endpoints y correos
 ```
@@ -94,17 +100,24 @@ Cada módulo trae sus propios `*.routes.js`, `*.schemas.js`, `*.controller.js`, 
 
 | Tabla | Para qué | Relaciones |
 | --- | --- | --- |
-| `Users` | Cuentas (`adopter`, `shelter`, `breeder`, `individual`, `admin`). Soft delete y suspensión (`suspendedAt`). | 1→N Pets, Appointments, Favorites, RefreshTokens |
+| `Users` | Cuentas (`adopter`, `shelter`, `breeder`, `individual`, `admin`, `staff`). Soft delete, suspensión (`suspendedAt`), rol del equipo (`staffRoleId`), calificación cacheada (`ratingAverage`, `ratingCount`) y datos de pago del vendedor (`payoutInfo`, fuera del scope por defecto). | 1→N Pets, Appointments, Favorites, RefreshTokens |
 | `Pets` | Publicaciones. `imageUrl` = portada. Soft delete. | N→1 User (owner), 1→N PetImages |
 | `PetImages` | Galería (1-3) + foto de madre + foto de padre. | N→1 Pet |
-| `VetClinics` | Clínicas donde se hace la entrega. | 1→N Appointments |
-| `Appointments` | Citas. Índice único parcial: una sola cita activa por mascota. Guarda quién canceló (`cancelledBy`) y por qué (`cancellationReason`). | N→1 Pet, User, VetClinic |
+| `VetClinics` | Veterinarias de entrega: `schedule` (horario semanal JSON), `status` (`pending`/`approved`/`rejected`), `isActive` (habilitada), contacto de la solicitud. | 1→N Appointments, N↔N Pets |
+| `PetClinics` | Veterinarias que el vendedor marcó para cada mascota, con `availability` (su horario ahí). | N→1 Pet, VetClinic |
+| `Appointments` | Citas (`pending_payment` → `pending` → `confirmed` → `completed`, o `cancelled`). Índice único parcial: una sola cita activa por mascota (contando la que espera pago). Guarda quién canceló y por qué, la propuesta de otro horario, la opción de pago y los reintentos del contrato. | N→1 Pet, User, VetClinic; 1→1 Payment, Review |
+| `Payments` | Pago en línea de la reserva: opción (`commission`/`full`), montos, estado, referencia de Wompi, `refundStatus`. | 1→1 Appointment |
+| `Payouts` | Desembolsos al vendedor cuando el comprador pagó todo en línea. | N→1 User (seller), 1→1 Payment |
+| `Reviews` | Encuesta: `dealClosed`, `rating` (1-5), `comment` (privado), oculta por el admin (`hiddenAt`). | 1→1 Appointment |
 | `Contracts` | PDF del contrato (clave en storage + SHA-256). | 1→1 Appointment |
 | `Favorites` | Favoritos (único por usuario+mascota). | N→1 User, Pet |
 | `RefreshTokens` | Sesiones (hash SHA-256, rotación, revocación). | N→1 User |
 | `PasswordResetTokens` | Enlaces de recuperación (hash, 1 h, un solo uso). | N→1 User |
 | `NewsletterSubscribers` | Correos del boletín. | — |
-| `SupportMessages` | Mensajes de "Escríbenos". | N→1 User (opcional) |
+| `SupportMessages` | Mensajes de "Escríbenos" con `audience`, `topic`, `status` (`open`/`resolved`) y nota interna. | N→1 User (opcional), 1→N SupportReplies |
+| `SupportReplies` | Respuestas del equipo (se envían por correo). | N→1 SupportMessage |
+| `StaffRoles` | Roles del equipo: nombre y permisos. | 1→N Users |
+| `AuditLogs` | Quién hizo qué en el panel admin. | N→1 User (actor) |
 | `SearchAlerts` | Filtros guardados (raza, ciudad, precio, tipo) para avisar por correo. | N→1 User |
 | `Notifications` | Notificaciones in-app: `type`, `data` (JSON con `appointmentId`, `petId`…), `readAt`, `createdAt`. | N→1 User |
 
@@ -130,7 +143,7 @@ docker compose exec app sh -c "npm run migrate && npm run seed"
 
 ### 3.1. Pruebas automatizadas
 
-La suite levanta un PostgreSQL desechable (en memoria), aplica las migraciones reales y prueba la API de punta a punta con Jest + Supertest: **76 pruebas** en 10 archivos.
+La suite levanta un PostgreSQL desechable (en memoria), aplica las migraciones reales y prueba la API de punta a punta con Jest + Supertest: **129 pruebas** en 18 archivos.
 
 ```bash
 docker compose -f docker-compose.test.yml run --rm --build tests
@@ -150,6 +163,14 @@ Corre esto **antes de cada push**. Si alguna prueba falla, no despliegues.
 | `public-forms.test.js` | Newsletter (idempotencia, correos de confirmación), "Escríbenos" (Reply-To, acuse, escape de HTML) |
 | `catalog-favorites-dashboard.test.js` | Filtros solo con mascotas disponibles, clínicas, favoritos, dashboard por rol |
 | `notifications.test.js` | Endpoints (`unread`, paginación, marcar una y todas), cada evento que notifica, correos de las importantes, recordatorios, citas vencidas y sin cerrar |
+| `clinics.test.js` | Admin de veterinarias (ciudades permitidas, horario, nombre repetido, habilitar), solicitud pública con avisos, aprobar/rechazar con correo, veterinarias de la mascota (ciudad, habilitadas, horario del vendedor, reemplazo al editar), aviso al deshabilitar |
+| `booking.test.js` | Horario de la veterinaria ∩ vendedor, minutos :00/:30, ventana de 3 días con horarios (saltando cerrados), veterinaria deshabilitada, propuesta de otro horario (proponer, aceptar, rechazar, vencimiento por fecha propuesta) |
+| `pets-filters.test.js` | Comisión en el DTO, `/catalogs/pricing`, filtros de `GET /pets` (tipo, precio publicado, edad, texto, vendedor, verificados), orden y paginación |
+| `payments.test.js` | Reserva con Wompi (firma de integridad), visibilidad mientras espera pago, webhook firmado (aprobado, rechazado, duplicado, monto alterado), vencimiento, pago tardío, devoluciones, desembolsos y datos de pago del vendedor, modo sin pasarela |
+| `reviews.test.js` | Encuestas pendientes, validaciones, promedio público sin comentarios, `/reviews/mine`, admin con filtros y ocultar, aviso del job |
+| `support-admin.test.js` | `audience`/`topic`, bandeja con filtros y búsqueda, estadísticas, responder por correo, resolver/reabrir, permiso `soporte` |
+| `staff.test.js` | Roles (CRUD y validaciones), asignar y quitar, `permissions` en login/refresh/me, `requirePermission` en cada ruta, cambios que aplican al instante, auditoría |
+| `contracts.test.js` | Aviso "¡Entrega completada!" cuando existe el contrato, desglose en el PDF, reintentos con espera creciente y aviso tras 5 fallos |
 | `ops.test.js` | `create-admin`, seed bloqueado en producción, script de alertas, rate limits |
 
 Cómo están armadas:
@@ -213,31 +234,39 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.
 | --- | --- | --- |
 | POST | `/auth/register` | Registro; devuelve `accessToken` + cookie `refreshToken` httpOnly. |
 | POST | `/auth/login` | Login (rate limit: 10 fallos/15min). |
-| POST | `/auth/refresh` | Rota el refresh token y entrega un nuevo access token. |
+| POST | `/auth/refresh` | Rota el refresh token y entrega un nuevo access token y el `user`. |
 | POST | `/auth/logout` | Revoca el refresh token actual. |
-| GET | `/auth/me` | Perfil del usuario autenticado. |
+| GET | `/auth/me` | Perfil del usuario autenticado. Las cuentas `staff` traen `permissions`; también vienen en el login y en el refresh. |
 | PATCH | `/auth/me` | Edita `fullName`, `city`, `phone` y/o `email` (al menos uno). Cambiar `email` exige `currentPassword`. |
 | PATCH | `/auth/me/password` | Cambia la contraseña (`currentPassword`, `newPassword`) y cierra las demás sesiones. |
 | POST | `/auth/forgot-password` | Envía un enlace de recuperación (vence en 1h). Siempre responde 200. Rate limit: 3/h por IP. |
 | POST | `/auth/reset-password` | Aplica `newPassword` con el `token` del enlace y revoca todas las sesiones. Rate limit: 10/h por IP. |
+| GET / PUT | `/auth/me/payout-info` | Vendedores: cuenta donde recibir lo de las ventas pagadas en línea. `{ method: bank\|nequi\|daviplata, bankName?, accountType?, accountNumber, holderName, holderDocument }`. |
 
 ### 5.3. Mascotas (`/pets`)
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| GET | `/pets` | Lista con filtros `city`, `breed`, `filter` (`adopcion`/`cachorros`/`criador`), `page`, `limit`. Cada `owner` incluye `isVerified`. |
+| GET | `/pets` | Lista paginada. Filtros: `adoptionType` (`sale`/`adoption`), `minPrice`/`maxPrice` (sobre el **precio publicado**, con comisión), `minAgeMonths`/`maxAgeMonths`, `q` (raza, nombre o ciudad), `city`, `breed`, `verified=true`, `sellerRole` (`breeder`/`individual`/`shelter`), `sort` (`recent`/`price_asc`/`price_desc`), `page`, `limit` (máx 50). Sigue aceptando `filter` (`adopcion`/`cachorros`/`criador`). |
 | GET | `/pets/mine` | Mascotas publicadas por el usuario autenticado. |
 | GET | `/pets/:id` | Detalle por UUID, con `images: [{ id, url, kind, sortOrder }]` (`kind`: `gallery`/`mother`/`father`). |
-| POST | `/pets` | Publica una mascota (roles `shelter`, `breeder`, `individual`). FormData con `gallery` (1-3 archivos, obligatorio), `motherPhoto` y `fatherPhoto` (obligatorios). Máx 5 imágenes. La primera de la galería queda como `imageUrl` (portada). |
-| PATCH | `/pets/:id` | Edita (solo el dueño). Imágenes opcionales: `gallery` reemplaza toda la galería; `motherPhoto`/`fatherPhoto` reemplazan solo esa foto. |
+| POST | `/pets` | Publica una mascota (roles `shelter`, `breeder`, `individual`). FormData con `gallery` (1-3 archivos, obligatorio), `motherPhoto` y `fatherPhoto` (obligatorios). Máx 5 imágenes. La primera de la galería queda como `imageUrl` (portada). `price` = lo que recibe el vendedor. Veterinarias: `clinicIds` (repetido, 1-10, obligatorio en ventas) y `clinicAvailability` (texto JSON `[{ clinicId, availability }]`). Ver sección 6.1. |
+| PATCH | `/pets/:id` | Edita (solo el dueño). Imágenes opcionales: `gallery` reemplaza toda la galería; `motherPhoto`/`fatherPhoto` reemplazan solo esa foto. Si llega `clinicIds`, **reemplaza** la lista de veterinarias; si cambia la ciudad hay que mandar veterinarias de la ciudad nueva. |
 | DELETE | `/pets/:id` | Elimina (solo el dueño, y solo si no tiene cita activa). |
+
+**DTO de mascota** (listado, detalle, `/pets/mine` y `/favorites`): además de lo de siempre trae `price` (lo que recibe el vendedor), `commission`, `publicPrice` (lo que ve y paga el comprador; 0 en adopciones), `clinics: [{ id, name, address, city, phone, schedule, availability, isActive }]` (vacío en publicaciones anteriores; `isActive: false` = ya no se puede agendar ahí) y `owner.rating: { average, count } | null` (promedio público con un decimal, sin comentarios).
 
 ### 5.4. Citas (`/appointments`)
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| POST | `/appointments` | Solicita cita. `meetingDate` debe ser >1h en el futuro. |
+| POST | `/appointments` | Solicita cita: `{ petId, clinicId, meetingDate, notes?, paymentOption? }`. Reglas en la sección 6.2: la veterinaria tiene que ser una de la mascota, la hora dentro del horario (veterinaria ∩ vendedor, en :00/:30) y en uno de los 3 próximos días con horarios. En ventas `paymentOption` (`commission`/`full`) es obligatorio; con pago en línea la cita nace `pending_payment` y la respuesta trae `payment.checkoutUrl`. |
 | GET | `/appointments` | Citas donde el usuario participa como comprador **o** como dueño de la mascota, sea cual sea su rol (un refugio o particular que compra también ve sus citas). Incluye `cancelledBy` y `cancellationReason`. |
 | GET | `/appointments/:id` | Detalle (usado por la pantalla de seguimiento). |
-| PATCH | `/appointments/:id/status` | Cambia estado, regido por la máquina de estados. |
+| PATCH | `/appointments/:id/status` | Cambia estado, regido por la máquina de estados. No se puede confirmar mientras haya una propuesta de otro horario. |
+| POST | `/appointments/:id/proposal` | **Vendedor**, cita `pending`: `{ meetingDate }` con las mismas reglas de horario. Reemplaza la propuesta anterior y avisa al comprador. |
+| POST | `/appointments/:id/proposal/accept` | **Comprador**: la cita queda `confirmed` con la fecha propuesta. Avisa al vendedor. |
+| POST | `/appointments/:id/proposal/reject` | **Comprador**: la cita se cancela (`proposal_rejected`) y la mascota vuelve a estar disponible. Avisa al vendedor. |
+
+**DTO de la cita**: los campos de la tabla (incluidos `cancelledBy`, `cancellationReason`, `paymentOption`) más `payment` (`{ id, option, amount, sellerPrice, commission, status, checkoutUrl, expiresAt, … } | null`), `pricing` (`{ option, sellerPrice, commission, amount, payAtMeeting }` en ventas), `proposal: { meetingDate, proposedAt } | null`, `availability` (horario del vendedor en esa veterinaria), `seller: { id, fullName }` y `clinic` con `schedule`. Errores de las propuestas: 409 si la cita ya no está `pending` o no hay propuesta; 403 si no es la parte que corresponde.
 
 ### 5.5. Favoritos (`/favorites`)
 | Método | Endpoint | Descripción |
@@ -246,16 +275,39 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.
 | POST | `/favorites/:id` | Agrega la mascota `:id` a favoritos. |
 | DELETE | `/favorites/:id` | La quita de favoritos. |
 
-### 5.6. Admin (`/admin`) — solo rol `admin`
-| Método | Endpoint | Descripción |
-| --- | --- | --- |
-| GET | `/admin/organizations?status=pending` | Lista refugios/criadores por estado de verificación. |
-| PATCH | `/admin/organizations/:id/verify` | Verifica una organización (envía correo si SMTP está configurado). |
-| PATCH | `/admin/organizations/:id/revoke` | Revoca la verificación. |
-| GET | `/admin/users?role=&search=&status=&page=&limit=` | Usuarios paginados; `search` busca en nombre y correo; `status` = `active`/`suspended`/`all`. |
-| PATCH | `/admin/users/:id/suspend` | Suspende la cuenta. Body opcional `{ reason }`. Ver el detalle debajo de esta tabla. |
-| PATCH | `/admin/users/:id/reactivate` | Reactiva la cuenta: vuelve a entrar y sus publicaciones reaparecen. |
-| GET | `/admin/appointments?status=&page=&limit=` | Todas las citas del sistema con `pet` (+`owner`), `clinic` y `adopter`. |
+### 5.6. Admin (`/admin`) — rol `admin` (todo) o `staff` (según permisos)
+Cada ruta exige un permiso (ver sección 6.5). El `admin` pasa siempre; una cuenta `staff` solo con ese permiso.
+
+| Método | Endpoint | Permiso | Descripción |
+| --- | --- | --- | --- |
+| GET | `/admin/summary` | `resumen` | Conteos: usuarios por rol, mascotas y citas por estado, vendedores y veterinarias por revisar, soporte abierto, devoluciones y desembolsos pendientes. |
+| GET | `/admin/organizations?status=pending` | `vendedores` | Lista refugios/criadores por estado de verificación. |
+| PATCH | `/admin/organizations/:id/verify` | `vendedores` | Verifica (notificación + correo). |
+| PATCH | `/admin/organizations/:id/revoke` | `vendedores` | Revoca la verificación. |
+| GET | `/admin/users?role=&search=&status=&page=&limit=` | `usuarios` | Usuarios paginados con `staffRole` y `rating`; `role` acepta `staff`; `status` = `active`/`suspended`/`all`. |
+| PATCH | `/admin/users/:id/suspend` | `usuarios.suspender` | Suspende la cuenta. Body opcional `{ reason }`. Ver detalle abajo. |
+| PATCH | `/admin/users/:id/reactivate` | `usuarios.suspender` | Reactiva la cuenta. |
+| PATCH | `/admin/users/:id/staff-role` | `roles` | `{ roleId \| null }`: con un id la cuenta pasa a `staff` con ese rol; con `null` vuelve a su rol anterior. No aplica al `admin` ni a uno mismo. Cierra las sesiones de esa cuenta. |
+| GET | `/admin/appointments?status=&page=&limit=` | `citas` | Todas las citas del sistema con `pet` (+`owner`), `clinic` y `adopter`. |
+| GET | `/admin/clinics?status=pending\|approved\|rejected\|all` | `veterinarias` | Veterinarias (sin paginar, de la más nueva a la más vieja). |
+| POST | `/admin/clinics` | `veterinarias` | `{ name, address, city, phone, schedule }`. La crea aprobada y habilitada. |
+| PATCH | `/admin/clinics/:id` | `veterinarias` | Cualquiera de los anteriores más `isActive` (solo para aprobadas). Al deshabilitar, las citas agendadas se mantienen y se avisa a los vendedores que se quedaron sin veterinarias. |
+| PATCH | `/admin/clinics/:id/approve` | `veterinarias` | Aprobada y habilitada; correo a `contactEmail`. |
+| PATCH | `/admin/clinics/:id/reject` | `veterinarias` | `{ reason? }`. Rechazada; correo a `contactEmail` con el motivo. |
+| GET | `/admin/reviews?sellerId=&rating=&page=&limit=` | `calificaciones` | Todas las calificaciones con comentarios y `seller`. |
+| PATCH | `/admin/reviews/:id` | `calificaciones` | `{ hidden }`: oculta una calificación abusiva (deja de contar en el promedio). |
+| GET | `/admin/support?status=open\|resolved\|all&audience=&search=&page=&limit=` | `soporte` | Bandeja: `{ items, meta }`, cada uno con `user: { id, role } \| null` y `replies`. |
+| GET | `/admin/support/stats` | `soporte` | `{ open, byAudience }` (solo abiertos). |
+| PATCH | `/admin/support/:id` | `soporte` | `{ status?, note? }`: resolver, reabrir o guardar nota interna. |
+| POST | `/admin/support/:id/reply` | `soporte` | `{ message, resolve }`: responde por correo (Reply-To al buzón de soporte), guarda la respuesta y, si `resolve`, lo resuelve. |
+| GET | `/admin/roles` | `roles` | `{ roles: [{ …, memberCount }], members, permissions }`. |
+| POST / PATCH | `/admin/roles`, `/admin/roles/:id` | `roles` | `{ name, description?, permissions }`. 409 si el nombre ya existe. |
+| DELETE | `/admin/roles/:id` | `roles` | 409 si alguien lo tiene. |
+| GET | `/admin/payments?status=&refundStatus=` | solo `admin` | Pagos en línea. `refundStatus=required` = pendientes de devolver. |
+| PATCH | `/admin/payments/:id/refund` | solo `admin` | `{ refundStatus: required\|refunded, refundNote? }`: registra la devolución hecha en Wompi. |
+| GET | `/admin/payouts?status=pending\|paid` | solo `admin` | Desembolsos a vendedores, con sus datos de pago. |
+| PATCH | `/admin/payouts/:id/paid` | solo `admin` | `{ transferReference }`: marca el desembolso como pagado. |
+| GET | `/admin/audit?actorId=&action=` | solo `admin` | Registro de auditoría (quién verificó, suspendió, asignó roles, respondió soporte, etc.). |
 
 **Qué pasa al suspender una cuenta** (no aplica a administradores):
 - No puede iniciar sesión (`403` con `code: "ACCOUNT_SUSPENDED"`). Si la contraseña es incorrecta responde el genérico "Credenciales inválidas", para no revelar a terceros qué cuentas están suspendidas.
@@ -274,7 +326,8 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
 | GET | `/catalogs/filters` | Razas y ciudades que tienen al menos una mascota **disponible** (de cuentas no suspendidas). |
-| GET | `/catalogs/clinics?city=` | Clínicas activas. |
+| GET | `/catalogs/clinics?city=` | Veterinarias **aprobadas y habilitadas**, con `phone` y `schedule` (la ciudad se compara sin tildes ni mayúsculas). |
+| GET | `/catalogs/pricing` | `{ commissionRate: 0.17, currency: "COP", paymentOptions }`, para que el frontend no tenga la tasa escrita a mano. |
 
 ### 5.9. Contratos (`/contracts`)
 | Método | Endpoint | Descripción |
@@ -290,7 +343,7 @@ Base URL: `http://localhost:3000/api/v1` (local) · `https://api.puppymarketcol.
 ### 5.11. Soporte (`/support`) — público, sesión opcional
 | Método | Endpoint | Descripción |
 | --- | --- | --- |
-| POST | `/support/contact` | `{ name?, email?, message }`. Con sesión, `name`/`email` salen del usuario si no se envían. Guarda en `SupportMessages`, reenvía a `SUPPORT_EMAIL` (con *Reply-To* al remitente) y envía un acuse de recibo al remitente. Rate limit: 5/h por IP. |
+| POST | `/support/contact` | `{ name?, email?, phone?, audience?, topic?, message }`. `audience`: `comprador`, `criadero`, `particular`, `veterinaria`, `otro`; `topic`: `cita`, `publicacion`, `pagos`, `cuenta`, `verificacion`, `veterinarias`, `otro`. Con sesión, `name`/`email` salen del usuario si no se envían. Guarda en `SupportMessages`, reenvía a `SUPPORT_EMAIL` (con *Reply-To* al remitente) y envía un acuse de recibo al remitente. Rate limit: 5/h por IP. |
 
 ### 5.12. Alertas de búsqueda (`/alerts`) — requiere sesión
 | Método | Endpoint | Descripción |
@@ -346,9 +399,30 @@ Igual que el job de alertas, usa un *advisory lock* de Postgres para que varias 
 
 **Tiempo real:** no hay SSE ni WebSocket. El frontend debe consultar `GET /notifications?unread=true&limit=1` cada 60 segundos y usar `unreadCount` para el contador de la campana. Es la opción recomendada para este volumen: `EventSource` no permite enviar el header `Authorization`, así que SSE obligaría a poner el token en la URL, donde queda en logs. Además, una conexión abierta por usuario complica escalar detrás de Traefik.
 
+### 5.14. Veterinarias (`/clinics`) — público
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| POST | `/clinics/requests` | Solicitud de la propia veterinaria: `{ name, address, city, phone, schedule, contactName, contactEmail }`. Crea una `pending` y `isActive: false` (201). Avisa al equipo (correo a `SUPPORT_EMAIL` y notificación `clinic.requested` a quien tenga permiso `veterinarias`) y confirma al solicitante. 409 si ya hay una con ese nombre en esa ciudad. Rate limit: 5/h por IP. |
+
+### 5.15. Pagos (`/payments`)
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| POST | `/payments/webhooks/wompi` | Webhook de Wompi. Público pero **firmado**: sin firma válida responde 401. Idempotente. Ver sección 6.3. |
+
+### 5.16. Calificaciones (`/reviews`) — requiere sesión
+| Método | Endpoint | Descripción |
+| --- | --- | --- |
+| GET | `/reviews/pending` | Encuestas del comprador: citas suyas `confirmed`/`completed` de hace 3+ días y sin calificar. `[{ appointmentId, meetingDate, pet: { name, imageUrl }, seller: { fullName } }]`. |
+| POST | `/reviews` | `{ appointmentId, dealClosed, rating (1-5), comment? (≤500) }`. 409 si ya está calificada o todavía no se puede. Si `dealClosed` y la cita sigue `confirmed`, avisa al vendedor para que la marque completada. Rate limit: 20/h. |
+| GET | `/reviews/mine` | Vendedor: `{ summary: { average, count, distribution }, items: [{ id, rating, dealClosed, comment, createdAt, buyer, pet }] }`. |
+
+Los **comentarios nunca salen en rutas públicas**: el público solo ve `owner.rating` (promedio y cantidad). Los ven el vendedor calificado y el admin.
+
 ---
 
-## 6. IMÁGENES DE LAS PUBLICACIONES
+## 6. REGLAS DE NEGOCIO: IMÁGENES, VETERINARIAS, AGENDA, PAGOS, CALIFICACIONES Y EQUIPO
+
+### Imágenes de las publicaciones
 
 **Regla de negocio:** cada publicación lleva **1 a 3 fotos de la mascota**, **1 foto de la madre** y **1 foto del padre**. Las tres categorías son obligatorias al crear, con un **máximo de 5 imágenes**.
 
@@ -368,7 +442,10 @@ Ejemplo desde el frontend:
 
 ```js
 const fd = new FormData();
-fd.append('name', 'Luna'); fd.append('breed', 'Beagle'); fd.append('ageMonths', '3'); fd.append('city', 'Bogotá');
+fd.append('name', 'Luna'); fd.append('breed', 'Beagle'); fd.append('ageMonths', '3'); fd.append('city', 'Bucaramanga');
+fd.append('adoptionType', 'sale'); fd.append('price', '1500000'); // lo que recibe el vendedor
+clinicIds.forEach((id) => fd.append('clinicIds', id)); // 1 a 10 veterinarias de la ciudad
+fd.append('clinicAvailability', JSON.stringify([{ clinicId: clinicIds[0], availability: { mon: { open: '09:00', close: '12:00' } } }]));
 fotos.forEach((f) => fd.append('gallery', f));   // 1 a 3
 fd.append('motherPhoto', fotoMadre);
 fd.append('fatherPhoto', fotoPadre);
@@ -376,6 +453,84 @@ await fetch(`${API}/pets`, { method: 'POST', headers: { Authorization: `Bearer $
 ```
 
 **Dónde se guardan:** en Cloudinary (plan gratuito: 25 GB). Cambiar a S3 es solo configurar `STORAGE_DRIVER=s3` + `S3_BUCKET` + `CDN_DOMAIN`. Como las imágenes no viven en el contenedor, **no se pierden al reiniciar ni al redesplegar**.
+
+### 6.1. Veterinarias de entrega
+
+- **Ciudades permitidas:** `Bucaramanga`, `Floridablanca` y `Piedecuesta` (variable `CLINIC_CITIES`). Al crear o solicitar una veterinaria se acepta la ciudad sin tildes ni mayúsculas y se guarda el nombre canónico.
+- **Horario semanal** (`schedule`), en hora de Colombia, con `null` en los días que no abre:
+  ```json
+  { "mon": { "open": "08:00", "close": "18:00" }, "tue": {…}, "wed": {…}, "thu": {…}, "fri": {…}, "sat": { "open": "08:00", "close": "13:00" }, "sun": null }
+  ```
+  Hay que abrir al menos un día, y en cada día abierto el cierre debe ser al menos 1 h después de la apertura. Las veterinarias que ya existían se migraron con ese horario por defecto. `openingHours` (texto) queda en desuso.
+- **Estados:** las solicitudes llegan `pending`; el admin las aprueba (`approved` + habilitada) o las rechaza con motivo. `isActive` = habilitada por el admin y solo aplica a las aprobadas.
+- **Al publicar**, el vendedor marca de 1 a 10 veterinarias habilitadas de la ciudad de la mascota (obligatorio en ventas) y, opcionalmente, su horario en cada una (`clinicAvailability`), que tiene que caber dentro del horario de la veterinaria. Si el admin cambia después el horario de la veterinaria, vale la intersección de los dos.
+- **Al deshabilitar o rechazar** una veterinaria, las citas ya agendadas se mantienen, no se aceptan nuevas, y si a una mascota no le queda ninguna habilitada se le avisa al vendedor (`pet.clinics_unavailable`).
+
+### 6.2. Agendamiento: horario y ventana de 3 días
+
+Para aceptar un `meetingDate` (al agendar y al proponer otro horario), en hora de Colombia (`APP_TIMEZONE`):
+1. La veterinaria tiene que ser **una de las de la mascota**. Si la mascota no tiene ninguna (publicaciones anteriores), sirve cualquier veterinaria habilitada.
+2. La hora tiene que estar dentro de la **intersección** entre el horario de la veterinaria y el del vendedor ahí: ese día los dos atienden, entre la apertura y **media hora antes del cierre**, y en minutos **:00 o :30**. Si no, 400 `{ field: "body.meetingDate", message: "La veterinaria no atiende a esa hora" }`.
+3. Tiene que caer en uno de los **3 primeros días que tengan horarios libres** contando desde hoy, con al menos 1 h de anticipación. Los días sin atención se saltan: un jueves en la noche con el domingo cerrado se ofrecen viernes, sábado y lunes. Si no, 400 `"Elige uno de los próximos días disponibles"`.
+
+Los 3 días (`BOOKING_DAYS`) y el máximo de búsqueda de 21 días (`BOOKING_SEARCH_DAYS`) son configurables. La lógica está en `src/utils/schedule.js` y coincide con `src/lib/appointments/slots.ts` del frontend.
+
+### 6.3. Comisión y pago en línea (Wompi)
+
+- El vendedor pone el precio que quiere recibir (`price`). PuppyMarket suma una **comisión del 17 %** (`COMMISSION_RATE`, redondeo al peso) y ese es el **precio publicado** (`publicPrice`) que ven, filtran y pagan los compradores. Ejemplo: $1.500.000 + $255.000 = **$1.755.000**.
+- Al agendar una venta, el comprador elige **`commission`** (paga en línea solo la comisión y le paga el resto al vendedor en la cita) o **`full`** (paga en línea todo; en la cita no paga nada más).
+
+**Flujo con pasarela:**
+
+```
+POST /appointments ──▶ cita pending_payment + Payment pending ──▶ respuesta con payment.checkoutUrl
+        │                    (el vendedor no la ve; la mascota sigue publicada;
+        │                     nadie más puede reservarla mientras tanto)
+        ▼
+Comprador paga en Wompi (Nequi, PSE, botón Bancolombia, tarjeta…) ──▶ vuelve a /citas?id=<appointmentId>
+        │
+        ▼
+Webhook firmado de Wompi ──▶ APPROVED: cita pending (por confirmar), mascota en proceso, aviso al vendedor con el desglose
+                         └─▶ DECLINED/VOIDED/ERROR: reserva cancelada (payment_declined), el comprador puede reintentar
+Sin pago en PAYMENT_EXPIRY_MINUTES (30) + 5 de gracia ──▶ el job la cancela (payment_expired)
+```
+
+- **Seguridad:** la URL de pago lleva la **firma de integridad** (SHA-256 de referencia + monto + moneda + vencimiento + secreto), así nadie puede cambiar el monto. El webhook se valida con el **secreto de eventos** y comparación en tiempo constante, y además se verifica que el monto y la moneda coincidan con el `Payment`. Es idempotente.
+- **Sin credenciales de Wompi** el pago en línea queda deshabilitado: la cita se crea `pending` como antes, sin `checkoutUrl` (el frontend ya muestra "el pago en línea todavía no está habilitado"), y se guarda la `paymentOption` elegida.
+- **Devoluciones (política pendiente de producto):** si se cancela una cita ya pagada (por comprador, vendedor, vencimiento o suspensión), o un pago llega tarde, el `Payment` queda con `refundStatus: required`. El admin hace la devolución en el panel de Wompi y la registra en `PATCH /admin/payments/:id/refund`.
+- **Pago al vendedor:** cuando se completa una cita pagada con `full`, se crea un `Payout` pendiente por el precio del vendedor. El vendedor registra su cuenta en `PUT /auth/me/payout-info`. El admin transfiere y lo marca pagado en `PATCH /admin/payouts/:id/paid`.
+- El contrato PDF y los avisos de la cita muestran el desglose (precio del vendedor, comisión y opción de pago).
+
+**Configurar Wompi:**
+1. Crea la cuenta en `comercios.wompi.co` y completa la verificación del comercio.
+2. En **Desarrolladores** copia la **llave pública**, el **secreto de integridad** y el **secreto de eventos**. Para pruebas usa las de sandbox (`pub_test_…`).
+3. En **URL de eventos** pon `https://api.puppymarketcol.com/api/v1/payments/webhooks/wompi`.
+4. En Dokploy define `WOMPI_PUBLIC_KEY`, `WOMPI_INTEGRITY_SECRET` y `WOMPI_EVENTS_SECRET`, y redespliega. Si falta una de las tres, la app no arranca.
+5. Prueba con una tarjeta de sandbox (Wompi publica tarjetas y números de Nequi de prueba que aprueban o rechazan) y revisa que la cita pase a "por confirmar".
+
+### 6.4. Calificaciones
+
+3 días después de una cita `confirmed` o `completed`, el comprador tiene la encuesta disponible en `GET /reviews/pending` y el job le envía un aviso (`review.requested`, una sola vez). El promedio se guarda cacheado en el vendedor (`ratingAverage`, `ratingCount`) y se recalcula al calificar o al ocultar una calificación.
+
+### 6.5. Roles del equipo y permisos
+
+El admin crea roles (por ejemplo "Soporte" o "Verificador") con permisos del catálogo y se los asigna a cuentas, que pasan a `role: "staff"`. Esas cuentas entran al panel admin y el servidor comprueba el permiso **en cada ruta** con `requirePermission`. El frontend solo esconde pestañas y botones; la protección real es la del servidor.
+
+| Permiso | Qué deja hacer |
+| --- | --- |
+| `resumen` | Ver el resumen. |
+| `vendedores` | Ver criaderos y verificarlos o revocarlos. |
+| `usuarios` | Ver la lista de cuentas. |
+| `usuarios.suspender` | Suspender y reactivar cuentas (incluye `usuarios`). |
+| `citas` | Ver todas las citas. |
+| `veterinarias` | Administrar veterinarias y solicitudes. |
+| `calificaciones` | Ver calificaciones con comentarios. |
+| `soporte` | Bandeja de soporte. |
+| `roles` | Crear y asignar roles (sensible: permite darse acceso a todo lo demás a través de otra cuenta). |
+
+- Los permisos se leen de la BD en cada petición: un cambio de rol aplica **al instante**. Además, al asignar o quitar un rol se cierran las sesiones de esa cuenta para que el frontend la vuelva a cargar.
+- **Pagos, desembolsos y auditoría** son solo del admin principal (no hay permiso de equipo para el dinero).
+- **Auditoría:** se registra quién verificó o revocó vendedores, suspendió o reactivó cuentas, creó, editó o asignó roles, administró veterinarias, respondió soporte, ocultó calificaciones y gestionó devoluciones y desembolsos (`GET /admin/audit`).
 
 ---
 
@@ -533,6 +688,16 @@ APPOINTMENT_JOBS_INTERVAL_MINUTES=15
 APPOINTMENT_REMINDER_FROM_HOUR=7
 APPOINTMENT_OVERDUE_HOURS=24
 
+CLINIC_CITIES=Bucaramanga,Floridablanca,Piedecuesta
+BOOKING_DAYS=3
+BOOKING_SEARCH_DAYS=21
+
+COMMISSION_RATE=0.17
+WOMPI_PUBLIC_KEY=pub_prod_xxxxx
+WOMPI_INTEGRITY_SECRET=prod_integrity_xxxxx
+WOMPI_EVENTS_SECRET=prod_events_xxxxx
+PAYMENT_EXPIRY_MINUTES=30
+
 RUN_MIGRATIONS=true
 ```
 
@@ -550,6 +715,11 @@ RUN_MIGRATIONS=true
 | `MAIL_FROM` / `APP_NAME` | `no-reply@puppymarketcol.com` / `PuppyMarket`. | Remitente y nombre que firma los correos. `MAIL_FROM` debe ser un correo del dominio verificado en el proveedor SMTP. |
 | `SEARCH_ALERTS_*` | `60` / `24`. | Cada cuántos minutos revisa alertas el servidor (0 = apagado) y horas mínimas entre correos por alerta. |
 | `APP_TIMEZONE` | `America/Bogota` | Zona horaria para saber "qué día es hoy" en los recordatorios y para las fechas de los textos. |
+| `CLINIC_CITIES` | `Bucaramanga,Floridablanca,Piedecuesta` | Ciudades donde se pueden registrar veterinarias. Para sumar una ciudad, agrégala aquí. |
+| `BOOKING_DAYS` / `BOOKING_SEARCH_DAYS` | `3` / `21` | Días con horarios que se ofrecen para agendar y hasta cuántos días adelante se buscan. |
+| `COMMISSION_RATE` | `0.17` | Comisión sobre el precio del vendedor. Tiene que coincidir con lo que muestra el frontend (lo lee de `/catalogs/pricing`). |
+| `WOMPI_*` | Ver 6.3. | Sin las tres, el pago en línea queda deshabilitado. Con una sola, la app no arranca. |
+| `PAYMENT_EXPIRY_MINUTES` | `30` | Minutos para pagar antes de que la reserva se cancele sola. |
 | `APPOINTMENT_*` | `15` / `7` / `24` | Cada cuántos minutos corre el job de citas (0 = apagado), desde qué hora local se mandan recordatorios y a las cuántas horas una confirmada sin cerrar genera aviso. |
 | `SUPPORT_EMAIL` | Buzón que recibe "Escríbenos". | Vacío = los mensajes solo se guardan en la BD. |
 
@@ -758,8 +928,20 @@ Es solo configuración; no hay que tocar código:
 ✅ Filtros del buscador solo con razas y ciudades que tienen mascotas disponibles
 ✅ Suite de pruebas automatizadas (76 pruebas de punta a punta contra Postgres real)
 ✅ Notificaciones in-app con correo para las importantes, recordatorios y vencimiento automático de citas
+✅ Veterinarias de entrega: administración, solicitudes, horario semanal y varias por mascota
+✅ Ventana de agendamiento de 3 días validada en el servidor
+✅ Comisión del 17 % y pago en línea de la reserva con Wompi (webhook, vencimiento, devoluciones marcadas y desembolsos)
+✅ Propuesta de otro horario
+✅ Encuesta de satisfacción y calificación pública de vendedores
+✅ Bandeja de soporte en el panel admin
+✅ Roles del equipo con permisos y registro de auditoría
+✅ Contrato PDF con reintentos y aviso cuando ya existe
+✅ Filtros y orden en `GET /pets` (paginación real)
 
 ⏳ **Pendiente**
+- **Política de devoluciones** (decisión de producto): hoy los pagos a devolver quedan marcados y se devuelven a mano en Wompi. Con la política definida se puede automatizar la devolución con la API de Wompi.
+- **Desembolsos automáticos** a vendedores (hoy el admin transfiere y marca pagado).
+
 1. **Bloqueo por cuenta** tras varios intentos de login fallidos (hoy el límite es por IP).
 2. **Verificación de correo al registrarse** y **2FA para cuentas admin**.
 3. **CI en GitHub Actions** que corra `docker-compose.test.yml` y `npm audit` en cada push y bloquee el merge si fallan.

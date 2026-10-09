@@ -8,10 +8,10 @@ const { runAppointmentJobs } = require('../modules/appointments/appointment.jobs
 // Si algún día hay varias réplicas, cada job usa un advisory lock de Postgres para no procesar dos veces.
 const JOBS = [
   {
-    name: 'citas (recordatorios, vencidas, sin cerrar)',
+    name: 'citas (recordatorios, vencidas, sin cerrar, pagos, encuestas, contratos)',
     minutes: () => env.APPOINTMENT_JOBS_INTERVAL_MINUTES,
     run: runAppointmentJobs,
-    report: (r) => r.recordatorios || r.vencidas || r.sinCerrar,
+    report: (r) => Object.values(r).some((n) => typeof n === 'number' && n > 0),
   },
   {
     name: 'alertas de búsqueda',

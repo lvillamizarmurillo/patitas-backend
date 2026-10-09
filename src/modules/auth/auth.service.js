@@ -4,11 +4,20 @@ const crypto = require('crypto');
 const { Op, UniqueConstraintError } = require('sequelize');
 const env = require('../../config/env');
 const logger = require('../../config/logger');
-const { sequelize, User, RefreshToken, PasswordResetToken } = require('../../models');
+const { sequelize, User, RefreshToken, PasswordResetToken, StaffRole } = require('../../models');
+const { expand } = require('../../config/permissions');
 const AppError = require('../../utils/AppError');
 const mailer = require('../../utils/mailer');
 const { escapeHtml } = require('../../utils/escape');
 const { toUserDTO } = require('./auth.dto');
+
+// Permisos efectivos de una cuenta `staff` (los de su rol, con los implícitos)
+const permissionsOf = async (user) => {
+  if (user.role !== 'staff' || !user.staffRoleId) return [];
+  const role = await StaffRole.findByPk(user.staffRoleId, { attributes: ['permissions'] });
+  return expand(role?.permissions || []);
+};
+const userDTO = async (user) => toUserDTO(user, await permissionsOf(user));
 
 const DUMMY_HASH = bcrypt.hashSync('patitas-dummy-password', 12);
 const REFRESH_DAYS = 30;
@@ -45,7 +54,7 @@ exports.login = async ({ email, password }, userAgent) => {
   if (!user || !ok) throw AppError.unauthorized('Credenciales inválidas');
   // Se revisa después de la contraseña para no revelar a terceros qué cuentas están suspendidas
   if (user.suspendedAt) throw AppError.suspended();
-  return { user: toUserDTO(user), accessToken: signAccessToken(user), refreshToken: await issueRefreshToken(user.id, userAgent) };
+  return { user: await userDTO(user), accessToken: signAccessToken(user), refreshToken: await issueRefreshToken(user.id, userAgent) };
 };
 
 exports.refresh = async (rawToken, userAgent) => {
@@ -70,7 +79,7 @@ exports.refresh = async (rawToken, userAgent) => {
   });
   await stored.update({ revokedAt: new Date(), replacedByTokenHash: sha256(newRaw) });
 
-  return { accessToken: signAccessToken(user), refreshToken: newRaw };
+  return { accessToken: signAccessToken(user), refreshToken: newRaw, user: await userDTO(user) };
 };
 
 exports.logout = async (rawToken) => {
@@ -81,7 +90,18 @@ exports.logout = async (rawToken) => {
 exports.me = async (userId) => {
   const user = await User.findByPk(userId);
   if (!user) throw AppError.notFound('Usuario no encontrado');
-  return toUserDTO(user);
+  return userDTO(user);
+};
+
+// Datos para que Puppymarket le transfiera al vendedor lo de las ventas pagadas en línea (opción `full`)
+exports.getPayoutInfo = async (userId) => {
+  const user = await User.scope('withPayoutInfo').findByPk(userId, { attributes: ['payoutInfo'] });
+  return user?.payoutInfo ?? null;
+};
+
+exports.setPayoutInfo = async (userId, info) => {
+  await User.update({ payoutInfo: info }, { where: { id: userId } });
+  return info;
 };
 
 // 400 y no 401: un 401 haría que el frontend intente refrescar la sesión o cerrarla
@@ -107,7 +127,7 @@ exports.updateMe = async (userId, { currentPassword, ...changes }) => {
     if (err instanceof UniqueConstraintError) throw AppError.conflict('El correo ya está registrado');
     throw err;
   }
-  return toUserDTO(user);
+  return userDTO(user);
 };
 
 // Cambia la contraseña y cierra las demás sesiones, dejando viva solo la del dispositivo actual

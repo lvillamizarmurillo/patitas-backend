@@ -52,3 +52,17 @@ exports.resetPassword = {
     newPassword: password,
   }),
 };
+
+// Cuenta donde recibir lo de las ventas pagadas en línea
+exports.payoutInfo = {
+  body: z.object({
+    method: z.enum(['bank', 'nequi', 'daviplata']),
+    bankName: z.string().trim().min(2).max(80).optional(),
+    accountType: z.enum(['ahorros', 'corriente']).optional(),
+    accountNumber: z.string().trim().regex(/^[0-9-]{6,30}$/, 'Número de cuenta inválido'),
+    holderName: z.string().trim().min(3).max(120),
+    holderDocument: z.string().trim().regex(/^[0-9A-Za-z.-]{5,20}$/, 'Documento inválido'),
+  }).refine((d) => d.method !== 'bank' || (d.bankName && d.accountType), {
+    message: 'Para cuenta bancaria indica el banco y el tipo de cuenta', path: ['bankName'],
+  }),
+};

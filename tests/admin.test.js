@@ -1,4 +1,4 @@
-const { API, api, auth, resetDb, createUser, createPet, createClinic, captureMail, futureDate } = require('./helpers');
+const { API, api, auth, resetDb, createUser, createPet, captureMail, book, waitFor } = require('./helpers');
 const { Appointment, Pet } = require('../src/models');
 
 let admin;
@@ -32,20 +32,19 @@ describe('Panel admin', () => {
     const org = await createUser({ role: 'shelter' });
     const res = await api().patch(`${API}/admin/organizations/${org.user.id}/verify`).set(auth(admin.token)).expect(200);
     expect(res.body.data.isVerified).toBe(true);
-    expect(mails.map((m) => m.to)).toContain(org.user.email);
+    await waitFor(() => mails.some((m) => m.to === org.user.email)); // el correo sale en segundo plano
   });
 
   test('GET /admin/appointments devuelve todas las citas con sus relaciones', async () => {
     const owner = await createUser({ role: 'shelter' });
     const adopter = await createUser();
-    const clinic = await createClinic();
     const pet = (await createPet(owner.token)).body.data;
-    await api().post(`${API}/appointments`).set(auth(adopter.token)).send({ petId: pet.id, clinicId: clinic.id, meetingDate: futureDate() }).expect(201);
+    await book(adopter.token, pet).expect(201);
     const res = await api().get(`${API}/admin/appointments?status=pending`).set(auth(admin.token)).expect(200);
     const appt = res.body.data.items.find((a) => a.petId === pet.id);
     expect(appt.pet.owner.id).toBe(owner.user.id);
     expect(appt.adopter.id).toBe(adopter.user.id);
-    expect(appt.clinic.id).toBe(clinic.id);
+    expect(appt.clinic.id).toBe(pet.clinics[0].id);
   });
 });
 
@@ -54,11 +53,9 @@ describe('Suspender y reactivar usuarios', () => {
     const mails = captureMail();
     const seller = await createUser({ role: 'breeder', isVerified: true });
     const buyer = await createUser();
-    const clinic = await createClinic();
     const pet = (await createPet(seller.token, { city: 'Manizales', breed: 'Husky' })).body.data;
     await api().post(`${API}/favorites/${pet.id}`).set(auth(buyer.token)).expect(201);
-    const appt = (await api().post(`${API}/appointments`).set(auth(buyer.token))
-      .send({ petId: pet.id, clinicId: clinic.id, meetingDate: futureDate() }).expect(201)).body.data;
+    const appt = (await book(buyer.token, pet).expect(201)).body.data;
 
     // Suspender
     const res = await api().patch(`${API}/admin/users/${seller.user.id}/suspend`).set(auth(admin.token))
@@ -90,7 +87,7 @@ describe('Suspender y reactivar usuarios', () => {
     expect((await Appointment.findByPk(appt.id)).status).toBe('cancelled');
     expect((await Pet.findByPk(pet.id)).status).toBe('available');
     const other = await createUser();
-    await api().post(`${API}/appointments`).set(auth(other.token)).send({ petId: pet.id, clinicId: clinic.id, meetingDate: futureDate() }).expect(409);
+    await book(other.token, pet).expect(409);
 
     // Filtro de admin
     const suspended = await api().get(`${API}/admin/users?status=suspended`).set(auth(admin.token)).expect(200);

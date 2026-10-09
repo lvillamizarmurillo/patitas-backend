@@ -1,4 +1,5 @@
-const { Pet, User, VetClinic } = require('../../models');
+const { Pet, User } = require('../../models');
+const { COMMISSION_RATE } = require('../../config/business');
 
 // Razas y ciudades que hoy tienen algo publicado: solo mascotas disponibles de cuentas no suspendidas
 const distinctAvailable = async (column) => {
@@ -18,7 +19,7 @@ exports.getFilters = async () => {
   return { breeds, cities };
 };
 
-exports.getClinics = async (city) => {
-  const where = { isActive: true, ...(city ? { city } : {}) };
-  return VetClinic.findAll({ where, order: [['name', 'ASC']] });
-};
+// Solo aprobadas y habilitadas, con teléfono y horario (las usan publicar y agendar)
+exports.getClinics = (city) => require('../clinics/clinic.service').listPublic({ city });
+
+exports.getPricing = () => ({ commissionRate: COMMISSION_RATE, currency: 'COP', paymentOptions: ['commission', 'full'] });

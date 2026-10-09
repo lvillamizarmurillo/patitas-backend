@@ -14,6 +14,7 @@ exports.enqueueContractGeneration = async (appointmentId) => {
     }));
     return;
   }
-  require('../modules/contracts/contract.service').generateForAppointment(appointmentId)
+  // Primer intento inline; si falla, el job de citas lo reintenta (contract.service.retryPending)
+  require('../modules/contracts/contract.service').attempt(appointmentId)
     .catch((err) => logger.error({ err, appointmentId }, 'Falló la generación del contrato'));
 };

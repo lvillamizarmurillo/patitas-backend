@@ -1,6 +1,7 @@
 const { Favorite, Pet, User } = require('../../models');
 const AppError = require('../../utils/AppError');
 const { toPetDTO } = require('../pets/pet.dto');
+const { clinicsInclude } = require('../pets/pet.service');
 
 exports.add = async (userId, petId) => {
   const pet = await Pet.findByPk(petId);
@@ -16,7 +17,13 @@ exports.remove = async (userId, petId) => {
 exports.list = async (userId) => {
   const favs = await Favorite.findAll({
     where: { userId },
-    include: [{ model: Pet, as: 'pet', include: [{ model: User, as: 'owner', attributes: ['id', 'fullName', 'role', 'isVerified', 'suspendedAt'] }] }],
+    include: [{
+      model: Pet, as: 'pet',
+      include: [
+        { model: User, as: 'owner', attributes: ['id', 'fullName', 'role', 'isVerified', 'suspendedAt', 'ratingAverage', 'ratingCount'] },
+        clinicsInclude(),
+      ],
+    }],
     order: [['createdAt', 'DESC']],
   });
   return favs.filter((f) => f.pet && !f.pet.owner?.suspendedAt).map((f) => toPetDTO(f.pet));

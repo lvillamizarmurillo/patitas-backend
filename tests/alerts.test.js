@@ -44,11 +44,13 @@ describe('Job de alertas (digest)', () => {
   test('envía solo lo que coincide, respeta el cooldown y acumula para el siguiente correo', async () => {
     const mails = captureMail();
     await api().post(`${API}/alerts`).set(auth(buyer.token))
-      .send({ breed: 'beagle', city: 'cali', maxPrice: 2000000, adoptionType: 'sale' }).expect(201);
+      .send({ breed: 'beagle', city: 'cali', maxPrice: 2200000, adoptionType: 'sale' }).expect(201);
 
     await createPet(seller.token, { name: 'Coincide1', breed: 'Beagle', price: 1500000 });
     await createPet(seller.token, { name: 'Coincide2', breed: 'Beagle mini', price: 1800000 });
     await createPet(seller.token, { name: 'MuyCara', breed: 'Beagle', price: 3500000 });
+    // Precio del vendedor 1.900.000 (< 2.200.000) pero publicado a 2.223.000 con la comisión: no coincide (13.6)
+    await createPet(seller.token, { name: 'CaraConComision', breed: 'Beagle', price: 1900000 });
     await createPet(seller.token, { name: 'OtraRaza', breed: 'Pug', price: 1000000 });
     await createPet(seller.token, { name: 'OtraCiudad', breed: 'Beagle', city: 'Bogotá', price: 1000000 });
     const sold = await createPet(seller.token, { name: 'Vendida', breed: 'Beagle', price: 1000000 });
@@ -65,7 +67,8 @@ describe('Job de alertas (digest)', () => {
     const html = alertMails[0].html;
     expect(html).toContain('Coincide1');
     expect(html).toContain('Coincide2');
-    ['MuyCara', 'OtraRaza', 'OtraCiudad', 'Vendida', 'Propia'].forEach((n) => expect(html).not.toContain(n));
+    ['MuyCara', 'CaraConComision', 'OtraRaza', 'OtraCiudad', 'Vendida', 'Propia'].forEach((n) => expect(html).not.toContain(n));
+    expect(html).toContain('$1.755.000'); // muestra el precio publicado (1.500.000 + 17 %)
     expect(html).toContain('https://puppymarketcol.com/buscar?breed=beagle&amp;city=cali');
 
     // Segunda corrida inmediata: en cooldown, no envía

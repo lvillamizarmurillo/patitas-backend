@@ -13,6 +13,12 @@
   <div class="box"><strong>Entregado por:</strong> <%= owner.fullName %> — <%= owner.email %> — <%= owner.phone %></div>
   <div class="box"><strong>Recibido por:</strong> <%= adopter.fullName %> — <%= adopter.email %> — <%= adopter.phone %></div>
   <div class="box"><strong>Lugar de entrega:</strong> <%= clinic.name %>, <%= clinic.address %>, <%= clinic.city %></div>
+  <% if (pricing) { %>
+  <div class="box"><strong>Valor de la venta</strong><br>
+    Precio del vendedor: <%= pricing.sellerPrice %> · Comisión de la plataforma: <%= pricing.commission %> · Total: <%= pricing.total %><br>
+    Forma de pago: <%= pricing.option %> — Pagado en línea: <%= pricing.paidOnline %> · Pagado al vendedor en la cita: <%= pricing.paidAtMeeting %>
+  </div>
+  <% } %>
   <p>Ambas partes certifican que la entrega de la mascota descrita se realizó en las condiciones acordadas a través de la plataforma Patitas, en la fecha indicada.</p>
   <div class="footer">Documento generado automáticamente por Patitas — Este documento no constituye firma electrónica certificada en los términos de la Ley 527 de 1999.</div>
 </body>
